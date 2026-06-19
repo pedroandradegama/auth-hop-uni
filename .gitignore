@@ -1,0 +1,9 @@
+.env
+.DS_Store
+venv/
+.venv/
+__pycache__/
+*.pyc
+Solicitacoes/
+uploads/
+logs/

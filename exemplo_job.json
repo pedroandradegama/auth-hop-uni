@@ -1,0 +1,28 @@
+{
+  "job_id": "a3f1c2e0-0000-0000-0000-000000000001",
+  "idempotency_key": "a3f1c2e0-0000-0000-0000-000000000001",
+  "org_id": "imag-org-uuid",
+  "convenio": "unimed_recife",
+  "paciente_cadastro_id": "uuid-do-golden-record-ou-null",
+  "paciente_nome": "MARIA DE FATIMA DA SILVA BARROS",
+  "carteirinha": "0034331000065409",
+  "medico": "DR FULANO DE TAL",
+  "codigos": [
+    {
+      "codigo_tuss": "41101219",
+      "sub_tipo": "RM",
+      "nome": "RM - CRANIO"
+    },
+    {
+      "codigo_tuss": "40901174",
+      "sub_tipo": "TC",
+      "nome": "TC - TORAX"
+    }
+  ],
+  "anexos": [
+    {
+      "url": "https://<storage-hop>/signed/pedido-medico.jpg",
+      "nome": "pedido.jpg"
+    }
+  ]
+}
