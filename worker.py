@@ -122,7 +122,7 @@ async def _pollar_uma_vez(client: httpx.AsyncClient) -> bool:
 
 
 async def loop():
-    print(">> poller imag-autorizador iniciado", flush=True)
+    print(">> poller imag-autorizador iniciado (daemon)", flush=True)
     async with httpx.AsyncClient(timeout=30) as client:
         while not _parar.is_set():
             try:
@@ -139,6 +139,25 @@ async def loop():
     print(">> poller encerrado.", flush=True)
 
 
+async def drenar(max_jobs: int = 50):
+    """Modo CRON: acorda, processa todos os jobs da fila ate' 204 (vazia), e
+    encerra. Sem daemon, sem estado entre execucoes — cada rodada comeca limpa.
+    `max_jobs` e' um teto de seguranca contra loop acidental."""
+    print(">> drenar imag-autorizador iniciado (cron)", flush=True)
+    processados = 0
+    async with httpx.AsyncClient(timeout=30) as client:
+        while processados < max_jobs:
+            try:
+                teve = await _pollar_uma_vez(client)
+            except Exception as e:
+                print(f"[poll] erro: {e}", flush=True)
+                break
+            if not teve:
+                break  # fila vazia (204) -> encerra
+            processados += 1
+    print(f">> drenar encerrado. {processados} job(s) processado(s).", flush=True)
+
+
 def _instalar_sinais(laco):
     for sig in (signal.SIGTERM, signal.SIGINT):
         try:
@@ -149,11 +168,16 @@ def _instalar_sinais(laco):
 
 def main():
     os.makedirs(config.UPLOADS_DIR, exist_ok=True)
+    # Modo padrao = cron (drenar). Use MODO=daemon para o loop continuo.
+    modo = os.environ.get("MODO", "cron").lower()
     laco = asyncio.new_event_loop()
     asyncio.set_event_loop(laco)
     _instalar_sinais(laco)
     try:
-        laco.run_until_complete(loop())
+        if modo == "daemon":
+            laco.run_until_complete(loop())
+        else:
+            laco.run_until_complete(drenar())
     finally:
         laco.close()
 

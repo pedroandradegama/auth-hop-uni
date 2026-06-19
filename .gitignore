@@ -1,9 +1,15 @@
+# Segredos — NUNCA versionar
 .env
-.DS_Store
+
+# Ambiente
 venv/
 .venv/
 __pycache__/
 *.pyc
+
+# Saidas de runtime
 Solicitacoes/
 uploads/
 logs/
+.DS_Store
+.DS_Store

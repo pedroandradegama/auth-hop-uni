@@ -148,6 +148,48 @@ def _poll():
     assert processados == ["sessao-123"], f"dedup falhou: {processados}"
 checa("poll: puxa job, Bearer, processa, dedup, 204", _poll)
 
+# 8b. Drenar (modo cron): processa ate' 204 e encerra
+def _drenar():
+    import os, asyncio, httpx, worker
+    os.environ["WORKER_INBOUND_SECRET"] = "teste"
+    os.environ["HOP_PROXIMO_JOB_URL"] = "https://hop.local/proximo-job-autorizacao"
+    job = {
+        "job_id": "s1", "idempotency_key": "s1", "org_id": "o1",
+        "carteirinha": "0034331000065409", "medico": "DR FULANO",
+        "codigos": [{"codigo_tuss": "41101219", "sub_tipo": "RM"}],
+        "anexos": [{"url": "https://x/y.jpg"}],
+    }
+    job2 = dict(job, job_id="s2", idempotency_key="s2")
+    processados = []
+    async def _fake_proc(j):
+        processados.append(j.job_id)
+    worker._processar = _fake_proc
+    worker._jobs_vistos.clear()
+
+    estado = {"n": 0}
+    def handler(request):
+        estado["n"] += 1
+        if estado["n"] == 1:
+            return httpx.Response(200, json=job)
+        if estado["n"] == 2:
+            return httpx.Response(200, json=job2)
+        return httpx.Response(204)   # fila vazia -> drenar encerra
+    async def run():
+        transport = httpx.MockTransport(handler)
+        async with httpx.AsyncClient(transport=transport) as c:
+            # injeta o client no _pollar_uma_vez via drenar nao da' (drenar cria o seu);
+            # entao exercitamos a logica chamando _pollar_uma_vez em sequencia.
+            n = 0
+            while n < 10:
+                if not await worker._pollar_uma_vez(c):
+                    break
+                n += 1
+            return n
+    n = asyncio.run(run())
+    assert n == 2, f"esperava drenar 2 jobs, drenou {n}"
+    assert processados == ["s1", "s2"]
+checa("drenar (cron): processa fila ate' 204", _drenar)
+
 # 9. Schema do job — payload valido passa, invalido falha
 def _schema():
     from schemas import JobPreAutorizacao
