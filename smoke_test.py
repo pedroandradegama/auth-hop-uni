@@ -127,6 +127,7 @@ def _poll():
 
     estado = {"n": 0}
     def handler(request):
+        assert request.method == "POST", f"poll deve ser POST, veio {request.method}"
         assert request.headers.get("Authorization") == "Bearer teste", "Bearer ausente"
         estado["n"] += 1
         if estado["n"] == 1:

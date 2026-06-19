@@ -101,10 +101,14 @@ async def _processar(job: JobPreAutorizacao):
 
 
 async def _pollar_uma_vez(client: httpx.AsyncClient) -> bool:
-    """Consulta proximo-job-autorizacao. Processa se houver job.
-    Retorna True se processou um job, False se nao havia (204)."""
+    """Consulta proximo-job-autorizacao (POST com corpo {}). Processa se houver
+    job. Retorna True se processou um job, False se nao havia (204).
+    O 204 e' tratado ANTES de qualquer .json() (corpo vazio nao se parseia)."""
     headers = {"Authorization": f"Bearer {config.worker_inbound_secret()}"}
-    r = await client.get(config.proximo_job_url(), headers=headers)
+    # POST com corpo {}: 'pegar o proximo job' tem efeito colateral (claim
+    # atomico no HOP) — POST e' o verbo correto. {} mantem corpo+header coerentes
+    # e deixa o lugar pronto para {"org_id": ...} no futuro multi-tenant.
+    r = await client.post(config.proximo_job_url(), headers=headers, json={})
     if r.status_code == 204:
         return False
     r.raise_for_status()
