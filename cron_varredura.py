@@ -13,7 +13,7 @@ import asyncio
 from datetime import datetime
 
 import config
-from portal import varredura
+from adapters.unimed_recife import coletar
 import callback
 
 
@@ -22,7 +22,7 @@ async def main():
     print(f"[varredura] inicio {inicio}", flush=True)
 
     try:
-        guias = await varredura.coletar(config.VARREDURA_JANELA_DIAS)
+        guias = await coletar(config.VARREDURA_JANELA_DIAS)
     except Exception as e:
         import traceback
         print(f"[varredura] FALHA na coleta: {e}\n{traceback.format_exc()}",

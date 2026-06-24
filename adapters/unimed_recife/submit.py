@@ -19,7 +19,7 @@ from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 import config
 import codigos as codigos_mod
-from portal import sessao, varredura
+from . import sessao, varredura
 
 
 class SubmitAbortado(Exception):

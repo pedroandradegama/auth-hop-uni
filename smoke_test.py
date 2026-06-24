@@ -27,7 +27,7 @@ print("== imag-autorizador · smoke test ==\n")
 # 1. Imports resolvem
 def _imports():
     import config, callback, worker            # noqa: F401
-    from portal import sessao, submit, varredura  # noqa: F401
+    from adapters.unimed_recife import sessao, submit, varredura  # noqa: F401
 checa("imports dos modulos", _imports)
 
 # 2. Config tem os valores de portal esperados
@@ -41,7 +41,7 @@ checa("valores de portal no config", _config)
 
 # 3. Carteirinha — casos validos
 def _carteirinha_ok():
-    from portal.submit import split_carteirinha
+    from adapters.unimed_recife.submit import split_carteirinha
     # 16 digitos
     assert split_carteirinha("0034331000065409") == ("003", "433100006540", "9")
     # com espacos e mascara
@@ -53,7 +53,7 @@ checa("split de carteirinha (validos)", _carteirinha_ok)
 
 # 4. Carteirinha — hard stop em invalida
 def _carteirinha_curta():
-    from portal.submit import split_carteirinha, SubmitAbortado
+    from adapters.unimed_recife.submit import split_carteirinha, SubmitAbortado
     try:
         split_carteirinha("123")
     except SubmitAbortado:
@@ -69,7 +69,7 @@ checa("sub-tipo desconhecido retorna None", _subtipo)
 
 # 6. Normalizacao de status da varredura (rotulos REAIS do portal)
 def _status():
-    from portal.varredura import _normalizar_status
+    from adapters.unimed_recife.varredura import _normalizar_status
     assert _normalizar_status("Autorizado") == "AUTORIZADO"
     assert _normalizar_status("Solicitado") == "EM_ANALISE"
     assert _normalizar_status("Auditoria Administrativa") == "EM_ANALISE"
@@ -80,7 +80,7 @@ checa("normalizacao de status do portal (rotulos reais)", _status)
 
 # 6b. Casamento de nome (truncamento da lista + prefixo numerico + acento)
 def _match_nome():
-    from portal.varredura import _normalizar_nome, _nomes_casam
+    from adapters.unimed_recife.varredura import _normalizar_nome, _nomes_casam
     # prefixo "865 - " e acento removidos
     assert _normalizar_nome("865 - SIMONE VENCESLAU DO NASC") == "SIMONE VENCESLAU DO NASC"
     assert _normalizar_nome("994 - GLEYBSON CÉSAR DA SILVA") == "GLEYBSON CESAR DA SILVA"

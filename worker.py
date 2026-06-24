@@ -28,7 +28,21 @@ import httpx
 import config
 import callback
 from schemas import JobPreAutorizacao
-from portal import submit
+import importlib
+
+# Registro EXPLICITO convenio -> modulo do adapter (lista branca; nao importar
+# string crua vinda do HOP). Adicionar uma linha por convenio novo.
+_ADAPTERS = {
+    "unimed_recife": "adapters.unimed_recife",
+    "amil": "adapters.amil",
+}
+
+
+def _carregar_adapter(convenio: str):
+    nome_mod = _ADAPTERS.get(convenio)
+    if not nome_mod:
+        raise ValueError(f"convenio sem adapter registrado: {convenio!r}")
+    return importlib.import_module(nome_mod)
 
 _parar = asyncio.Event()
 _jobs_vistos: set[str] = set()  # dedup local (rede de seguranca)
@@ -78,7 +92,8 @@ async def _processar(job: JobPreAutorizacao):
                 "arquivos": caminhos,
             }
             try:
-                resultado = await submit.executar(dados)
+                adapter = _carregar_adapter(job.convenio)
+                resultado = await adapter.submit(dados)
             except Exception as e:
                 resultado = {"status": "erro_submit", "numero_protocolo": None,
                              "evidencias": [], "mensagem": f"Falha no worker: {e}"}

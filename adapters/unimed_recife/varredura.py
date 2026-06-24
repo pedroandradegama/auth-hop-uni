@@ -22,7 +22,7 @@ import re
 from datetime import datetime, timedelta
 
 import config
-from portal import sessao
+from . import sessao
 
 
 # Status reais do portal -> vocabulario normalizado do contrato.
