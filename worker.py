@@ -25,13 +25,33 @@ from datetime import datetime
 
 import httpx
 
+import importlib
+
 import config
 import callback
 from schemas import JobPreAutorizacao
-from portal import submit
+from portal import submit as _submit_unimed
 
 _parar = asyncio.Event()
 _jobs_vistos: set[str] = set()  # dedup local (rede de seguranca)
+
+# Roteamento por convenio. Registro EXPLICITO (lista branca): convenio vem do
+# HOP; importar modulo a partir de string crua seria porta para erro/abuso.
+# Unimed permanece em portal/ (sem Tarefa Zero por ora); convenios novos vivem
+# em adapters/<nome>/ e expoem submit()/coletar() pelo __init__.
+_ADAPTERS = {
+    "sassepe": "adapters.sassepe",
+    # "unimed_recife": tratado pelo fallback portal/ abaixo.
+}
+
+
+def _resolver_submit(convenio: str):
+    """Devolve a coroutine-funcao submit(dados)->dict para o convenio.
+    Fallback para o portal/ do Unimed quando o convenio nao esta no registro."""
+    nome_mod = _ADAPTERS.get(convenio)
+    if nome_mod:
+        return importlib.import_module(nome_mod).submit
+    return _submit_unimed.executar  # Unimed (portal/), comportamento legado
 
 
 def _nome_seguro(nome: str, i: int) -> str:
@@ -72,13 +92,15 @@ async def _processar(job: JobPreAutorizacao):
         else:
             dados = {
                 "carteirinha": job.carteirinha,
+                "cpf": job.cpf,
                 "medico": job.medico,
                 "paciente_nome": job.paciente_nome,
                 "codigos": [c.model_dump() for c in job.codigos],
                 "arquivos": caminhos,
             }
             try:
-                resultado = await submit.executar(dados)
+                submit_fn = _resolver_submit(job.convenio)
+                resultado = await submit_fn(dados)
             except Exception as e:
                 resultado = {"status": "erro_submit", "numero_protocolo": None,
                              "evidencias": [], "mensagem": f"Falha no worker: {e}"}
