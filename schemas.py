@@ -8,7 +8,7 @@ SINCRONO (o HITL sabe na hora), antes de qualquer browser abrir.
 Anexos vao como URLs ASSINADAS (o pedido medico ja' esta no storage do HOP
 quando o Go acontece). O worker baixa as URLs; nao trafega bytes no /job.
 """
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 import config
 
@@ -63,7 +63,12 @@ class JobPreAutorizacao(BaseModel):
     paciente_nome: str | None = None  # usado p/ casar o protocolo na lista pos-gravar
 
     # Dados da solicitacao
-    carteirinha: str
+    # Identificador do beneficiario: a espinha pode carregar OS DOIS; cada
+    # adapter decide qual usa. Unimed/Amil usam carteirinha; Sassepe NAO tem
+    # carteirinha — elegibilidade por CPF. Ambos opcionais; model_validator
+    # exige PELO MENOS UM. Validacao de formato autoritativa no submit do adapter.
+    carteirinha: str | None = None
+    cpf: str | None = None
     medico: str
     codigos: list[ExameItem] = Field(min_length=1)
     anexos: list[AnexoItem] = Field(
@@ -80,12 +85,31 @@ class JobPreAutorizacao(BaseModel):
 
     @field_validator("carteirinha")
     @classmethod
-    def _carteirinha_minima(cls, v: str) -> str:
-        # Gate leniente: pega erro grosseiro cedo (422). O split autoritativo
-        # (regra 15/16/17 digitos) fica no submit.py como hard stop.
-        digitos = "".join(filter(str.isdigit, v or ""))
+    def _carteirinha_minima(cls, v: str | None) -> str | None:
+        # Gate leniente: so' valida SE veio carteirinha. O split autoritativo
+        # (15/16/17 digitos) fica no submit.py do adapter como hard stop.
+        if v is None or not v.strip():
+            return None
+        digitos = "".join(filter(str.isdigit, v))
         if len(digitos) < 15:
-            raise ValueError(
-                f"carteirinha com {len(digitos)} digitos (minimo 15)"
-            )
+            raise ValueError(f"carteirinha com {len(digitos)} digitos (minimo 15)")
         return v.strip()
+
+    @field_validator("cpf")
+    @classmethod
+    def _cpf_minimo(cls, v: str | None) -> str | None:
+        if v is None or not v.strip():
+            return None
+        digitos = "".join(filter(str.isdigit, v))
+        if len(digitos) != 11:
+            raise ValueError(f"cpf com {len(digitos)} digitos (esperado 11)")
+        return v.strip()
+
+    @model_validator(mode="after")
+    def _identificador_presente(self):
+        if not (self.carteirinha or self.cpf):
+            raise ValueError(
+                "job sem identificador: informe carteirinha ou cpf "
+                "(o adapter do convenio escolhe qual usa)"
+            )
+        return self

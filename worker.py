@@ -35,6 +35,7 @@ import importlib
 _ADAPTERS = {
     "unimed_recife": "adapters.unimed_recife",
     "amil": "adapters.amil",
+    "sassepe": "adapters.sassepe",
 }
 
 
@@ -86,6 +87,7 @@ async def _processar(job: JobPreAutorizacao):
         else:
             dados = {
                 "carteirinha": job.carteirinha,
+                "cpf": job.cpf,
                 "medico": job.medico,
                 "paciente_nome": job.paciente_nome,
                 "codigos": [c.model_dump() for c in job.codigos],
