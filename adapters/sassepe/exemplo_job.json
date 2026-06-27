@@ -1,0 +1,16 @@
+{
+  "job_id": "b1d2e3f4-0000-0000-0000-000000000001",
+  "idempotency_key": "b1d2e3f4-0000-0000-0000-000000000001",
+  "org_id": "imag-org-uuid",
+  "convenio": "sassepe",
+  "paciente_cadastro_id": "uuid-do-golden-record-ou-null",
+  "paciente_nome": "AUREA BARBOSA DA SILVA FISCHLER",
+  "cpf": "643.877.204-68",
+  "medico": "25245 PRISCILLA CARDOSO LAMEIRA ANDRADE",
+  "codigos": [
+    { "codigo_tuss": "40808041", "sub_tipo": "RM", "nome": "MAMOGRAFIA DIGITAL" }
+  ],
+  "anexos": [
+    { "url": "https://<storage-hop>/signed/pedido-medico.png", "nome": "pedido.png" }
+  ]
+}

@@ -1,51 +1,75 @@
 """
-cron_varredura.py — Entry point do cron diario (Tempo 2).
+cron_varredura.py — Entry point do cron diario (Tempo 2), MULTI-CONVENIO.
 
-Roda 1x/dia (sugestao: junto/logo apos o daily report das 07:00 BRT). Coleta
-as guias da janela recente no portal e posta UM sweep_result para o HOP. A
-transicao de estado e' idempotente do lado do HOP — este script so' raspa e
-envia, mesmo que a guia ja tenha sido vista em dias anteriores.
+Roda 1x/dia. Para CADA convenio registrado: coleta as guias da janela recente
+no portal e posta UM sweep_result para o HOP. A transicao de estado e'
+idempotente do lado do HOP — este script so' raspa e envia.
+
+Isolamento por convenio: a coleta de um convenio que falhar (ex.: credencial
+ausente naquela VPS, portal fora do ar) e' logada e NAO derruba os demais.
+CRON_CONVENIOS (CSV no env) restringe quais rodam; vazio = todos.
 
 Uso no crontab:
-    0 7 * * *  cd /opt/imag-autorizador && /usr/bin/python3 cron_varredura.py >> logs/varredura.log 2>&1
+    15 10 * * *  cd /opt/imag-autorizador && ./run_varredura.sh >> logs/varredura.log 2>&1
 """
 import asyncio
+import os
+import traceback
 from datetime import datetime
 
 import config
-from adapters.unimed_recife import coletar
 import callback
+from adapters.unimed_recife import coletar as coletar_unimed
+from adapters.sassepe import coletar as coletar_sassepe
 
 
-async def main():
-    inicio = datetime.now().isoformat()
-    print(f"[varredura] inicio {inicio}", flush=True)
+# (convenio, coletar async(janela_dias)->list). Adicione convenios aqui.
+_VARREDURAS = [
+    ("unimed_recife", coletar_unimed),
+    ("sassepe", coletar_sassepe),
+]
 
+
+def _convenios_ativos():
+    filtro = os.environ.get("CRON_CONVENIOS", "").strip()
+    if not filtro:
+        return _VARREDURAS
+    permitidos = {c.strip() for c in filtro.split(",") if c.strip()}
+    return [(n, fn) for n, fn in _VARREDURAS if n in permitidos]
+
+
+async def _varrer_convenio(nome: str, coletar) -> None:
+    janela = config.VARREDURA_JANELA_DIAS
     try:
-        guias = await coletar(config.VARREDURA_JANELA_DIAS)
+        guias = await coletar(janela)
     except Exception as e:
-        import traceback
-        print(f"[varredura] FALHA na coleta: {e}\n{traceback.format_exc()}",
+        print(f"[varredura:{nome}] FALHA na coleta: {e}\n{traceback.format_exc()}",
               flush=True)
         return
 
-    print(f"[varredura] {len(guias)} guia(s) coletada(s)", flush=True)
-
+    print(f"[varredura:{nome}] {len(guias)} guia(s) coletada(s)", flush=True)
     payload = {
         "tipo": "sweep_result",
-        "convenio": "unimed_recife",
-        "janela_dias": config.VARREDURA_JANELA_DIAS,
+        "convenio": nome,
+        "janela_dias": janela,
         "guias": guias,
     }
-
     try:
         res = await callback.enviar(payload)
-        print(f"[varredura] callback -> {res['status_code']} ok={res['ok']}",
+        print(f"[varredura:{nome}] callback -> {res['status_code']} ok={res['ok']}",
               flush=True)
     except Exception as e:
-        import traceback
-        print(f"[varredura] FALHA no callback: {e}\n{traceback.format_exc()}",
+        print(f"[varredura:{nome}] FALHA no callback: {e}\n{traceback.format_exc()}",
               flush=True)
+
+
+async def main():
+    print(f"[varredura] inicio {datetime.now().isoformat()}", flush=True)
+    ativos = _convenios_ativos()
+    print(f"[varredura] convenios: {[n for n, _ in ativos]}", flush=True)
+    for nome, coletar in ativos:  # sequencial: um portal por vez
+        await _varrer_convenio(nome, coletar)
+    print(f"[varredura] fim {datetime.now().isoformat()}", flush=True)
 
 
 if __name__ == "__main__":
