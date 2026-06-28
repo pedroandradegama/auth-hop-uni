@@ -15,9 +15,15 @@ import config
 SUBTIPOS_VALIDOS = set(config.SUBTIPO_VALUE.keys())  # {"RM", "TC"}
 
 
+# Convenios cujo portal NAO usa sub_tipo RM/TC (codigo TUSS vai direto; ex.:
+# Sassepe, onde a Tabela e' sempre 22 e o exame pode ser mamografia/US/etc.).
+# Para esses, sub_tipo e' livre/opcional. Os demais (Unimed) exigem RM/TC.
+CONVENIOS_SEM_SUBTIPO = {"sassepe"}
+
+
 class ExameItem(BaseModel):
     codigo_tuss: str
-    sub_tipo: str
+    sub_tipo: str | None = None
     nome: str | None = None
 
     @field_validator("codigo_tuss")
@@ -30,13 +36,10 @@ class ExameItem(BaseModel):
 
     @field_validator("sub_tipo")
     @classmethod
-    def _subtipo_valido(cls, v: str) -> str:
-        v = (v or "").strip().upper()
-        if v not in SUBTIPOS_VALIDOS:
-            raise ValueError(
-                f"sub_tipo invalido '{v}'; use um de {sorted(SUBTIPOS_VALIDOS)}"
-            )
-        return v
+    def _subtipo_norm(cls, v: str | None) -> str | None:
+        # So' normaliza. A exigencia RM/TC e' POR CONVENIO, no JobPreAutorizacao
+        # (que conhece o convenio). Aqui sub_tipo pode ate' ser None (Sassepe).
+        return ((v or "").strip().upper() or None)
 
 
 class AnexoItem(BaseModel):
@@ -112,4 +115,17 @@ class JobPreAutorizacao(BaseModel):
                 "job sem identificador: informe carteirinha ou cpf "
                 "(o adapter do convenio escolhe qual usa)"
             )
+        return self
+
+    @model_validator(mode="after")
+    def _subtipo_por_convenio(self):
+        # Exige sub_tipo RM/TC SO' para convenios que usam (Unimed). Sassepe e'
+        # isento: codigo TUSS vai direto, sub_tipo nem e' usado pelo adapter.
+        if self.convenio not in CONVENIOS_SEM_SUBTIPO:
+            for e in self.codigos:
+                if e.sub_tipo not in SUBTIPOS_VALIDOS:
+                    raise ValueError(
+                        f"sub_tipo invalido '{e.sub_tipo}' para convenio "
+                        f"'{self.convenio}'; use um de {sorted(SUBTIPOS_VALIDOS)}"
+                    )
         return self
