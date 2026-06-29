@@ -17,6 +17,26 @@ para Playwright preservando o metodo exato que funcionou:
 Inputs React: NUNCA setar input.value via JS (nao dispara o estado). Sempre
 clicar + digitar pelo teclado (page.keyboard), como aqui.
 """
+import unicodedata
+
+
+def _norm(s: str) -> str:
+    """Maiuscula, sem acento, espacos colapsados (para casar nomes)."""
+    s = unicodedata.normalize("NFKD", s or "").encode("ascii", "ignore").decode()
+    return " ".join(s.upper().split())
+
+
+def limpar_nome_medico(nome: str) -> str:
+    """Remove prefixo de tratamento (Dr./Dra.) e normaliza. O pedido medico
+    costuma trazer 'Dra. Nubia Rosa Lopes'; o registro do portal nao tem o
+    prefixo (e pode ter sobrenome extra)."""
+    n = _norm(nome)
+    for p in ("DRA.", "DR.", "DRA", "DR"):
+        if n == p:
+            return ""
+        if n.startswith(p + " "):
+            return n[len(p):].strip()
+    return n
 
 # JS reutilizado: acha o N-esimo label pelo texto (com ou sem "*") e devolve o
 # rect. `indice` resolve labels DUPLICADOS (ex.: "Código CBO" aparece nas secoes
@@ -109,6 +129,59 @@ async def preencher_dropdown(page, label_text: str, search_term: str,
     if not await abrir_dropdown(page, label_text, search_term):
         return False
     return await clicar_opcao_listbox(page, option_text)
+
+
+# JS: extrai os textos das opcoes do listbox aberto (dedup).
+_JS_LISTBOX_OPTIONS = """
+() => {
+  const lb = document.querySelector('[role=listbox]');
+  if (!lb) return [];
+  let els = Array.from(lb.querySelectorAll('[role=option]'));
+  if (!els.length) els = Array.from(lb.children);
+  const seen = new Set(); const out = [];
+  for (const e of els) {
+    const t = (e.textContent || '').trim();
+    if (t.length > 2 && !seen.has(t)) { seen.add(t); out.push(t); }
+  }
+  return out;
+}
+"""
+
+
+async def selecionar_solicitante(page, crm: str | None, nome: str):
+    """Seleciona o Profissional solicitante por CRM + nome (descoberto no portal:
+    o dropdown casa por NOME e por CRM, e o prefixo exibido E' o CRM — que repete
+    por UF entre estados, ex.: CRM 16188 tem 5 medicos de UFs diferentes).
+
+    Estrategia: busca pelo CRM (narrowa a lista), e casa a opcao cujo NOME do
+    registro CONTEM todos os tokens do nome buscado (tolera acento e sobrenome
+    extra: 'NUBIA ROSA LOPES' ⊂ 'NUBIA ROSA LOPES FREIRE'). Sem CRM, busca pelo
+    proprio nome (menos confiavel: o listbox so' carrega ~10 itens).
+
+    Conservador (I3): so' clica com match UNICO. Retorna ('ok'|'nenhum'|
+    'ambiguo', candidatos) — o chamador aborta para captura manual se != 'ok'.
+    """
+    nome_norm = limpar_nome_medico(nome)
+    tokens = [t for t in nome_norm.split() if len(t) >= 2]
+    termo = (str(crm).strip() if crm else nome_norm)
+    if not termo:
+        return "nenhum", []
+    if not await abrir_dropdown(page, "Profissional solicitante", termo):
+        return "nenhum", []
+    opcoes = await page.evaluate(_JS_LISTBOX_OPTIONS)
+
+    candidatos = []
+    for op in opcoes:
+        parte_nome = op.split("-", 1)[1] if "-" in op else op
+        registro = _norm(parte_nome).split()
+        if tokens and all(tok in registro for tok in tokens):
+            candidatos.append(op)
+    candidatos = list(dict.fromkeys(candidatos))
+
+    if len(candidatos) != 1:
+        return ("ambiguo" if candidatos else "nenhum"), candidatos
+    ok = await clicar_opcao_listbox(page, candidatos[0])
+    return ("ok" if ok else "nenhum"), candidatos
 
 
 async def preencher_cbo(page, indice: int = 0) -> bool:
