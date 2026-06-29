@@ -42,20 +42,21 @@ class SubmitAbortado(Exception):
 
 # ── Solicitante (busca pelo metodo do piloto) ────────────────────────────────
 def _split_medico(medico: str):
-    """Quebra o `medico` do job em (numero_busca, nome_match), seguindo o metodo
-    de busca do piloto: digitar o NUMERO de registro e casar pelo NOME.
+    """Quebra o `medico` do job em (crm, nome). O numero E' o CRM (descoberto no
+    portal: o dropdown de solicitante exibe 'CRM - NOME' e casa por ambos).
 
     Formatos aceitos (HOP):
-      "11419 FABIO DAGOBERTO CAMARA"   -> ("11419", "FABIO DAGOBERTO CAMARA")
-      "11419 - FABIO DAGOBERTO CAMARA" -> ("11419", "FABIO DAGOBERTO CAMARA")
-      "FABIO DAGOBERTO CAMARA"         -> (None, "FABIO DAGOBERTO CAMARA")
-    Sem numero, cai no fallback: busca e casa pelo proprio nome.
+      "16188 NUBIA ROSA LOPES"   -> ("16188", "NUBIA ROSA LOPES")
+      "16188 - NUBIA ROSA LOPES" -> ("16188", "NUBIA ROSA LOPES")
+      "Dra. Nubia Rosa Lopes"    -> (None, "Dra. Nubia Rosa Lopes")
+    Sem CRM, cai no fallback: busca pelo proprio nome (menos confiavel).
+    O strip de prefixo (Dr./Dra.) e a normalizacao ficam no _ui.
     """
     t = (medico or "").strip()
     m = re.match(r"^\s*(\d+)\s*-?\s*(.*)$", t)
     if m and m.group(1):
-        return m.group(1), m.group(2).strip().upper()
-    return None, t.upper()
+        return m.group(1), m.group(2).strip()
+    return None, t
 
 
 # ── CPF ─────────────────────────────────────────────────────────────────────
@@ -179,14 +180,17 @@ async def _preencher_cabecalho(page, medico: str):
     campo que nao preenche aborta antes de qualquer gravar."""
     await _ui.marcar_paciente_no_local(page)
 
-    # Profissional SOLICITANTE (variavel: vem do job). Metodo do piloto: digita
-    # o NUMERO de registro (lazy-load do listbox) e casa pelo NOME. Sem numero,
-    # busca e casa pelo proprio nome (fallback).
-    num, nome = _split_medico(medico)
-    termo_busca = num or nome
-    if not await _ui.preencher_dropdown(
-        page, "Profissional solicitante", termo_busca, nome
-    ):
+    # Profissional SOLICITANTE (variavel: vem do job). Busca por CRM + casa por
+    # nome tolerante (acento/sobrenome extra). Conservador (I3): match unico ou
+    # aborta para captura manual — CRM repete por UF, chutar = solicitante errado.
+    crm, nome = _split_medico(medico)
+    status, candidatos = await _ui.selecionar_solicitante(page, crm, nome)
+    if status != "ok":
+        if status == "ambiguo":
+            raise SubmitAbortado(
+                f"Profissional solicitante '{medico}' ambiguo no dropdown "
+                f"({len(candidatos)} matches: {candidatos}); requer captura manual."
+            )
         raise SubmitAbortado(
             f"Profissional solicitante '{medico}' nao localizado no dropdown."
         )
