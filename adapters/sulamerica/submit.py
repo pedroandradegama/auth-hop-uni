@@ -126,8 +126,10 @@ async def _selecionar_carater(page, evidencias):
 
 
 # ── Formulario (cabecalho) ───────────────────────────────────────────────────
-async def _preencher_cabecalho(page, crm, nome, evidencias):
-    """Preenche o cabecalho do SP/SADT. Retorna o frame_alvo (do formulario)."""
+async def _preencher_cabecalho(page, crm, nome, evidencias, guia_prestador):
+    """Preenche o cabecalho do SP/SADT. Retorna o frame_alvo (do formulario).
+    `guia_prestador` e' gerado pelo chamador e reusado na captura do protocolo
+    (a Consulta casa o protocolo real por este numero)."""
     await page.wait_for_timeout(3000)
     campo_guia_sel = "input[name='solicitacao-sp-sadt.numero-guia-prestador']"
     frame = await _ui.achar_frame(page, campo_guia_sel)
@@ -135,8 +137,9 @@ async def _preencher_cabecalho(page, crm, nome, evidencias):
         await _ui.snap(page, "erro_formulario", evidencias)
         raise SubmitAbortado("Formulario SP/SADT nao carregou (campo da guia).")
 
-    # Numero da guia do prestador (campo de entrada; nao e' o protocolo).
-    await frame.locator(campo_guia_sel).fill(_numero_guia_aleatorio())
+    # Numero da guia do prestador (campo de entrada; nao e' o protocolo, mas e'
+    # a CHAVE que usamos depois para achar o protocolo real na Consulta).
+    await frame.locator(campo_guia_sel).fill(guia_prestador)
     await page.wait_for_timeout(300)
 
     # Nome do profissional solicitante.
@@ -353,13 +356,15 @@ async def executar(job: dict) -> dict:
         return {"status": "erro_submit", "numero_protocolo": None,
                 "evidencias": [], "mensagem": "Nenhum anexo (pedido medico) informado."}
 
+    guia_prestador = _numero_guia_aleatorio()
+
     try:
         async with sessao.navegador() as page:
             await sessao.login(page)
             await _navegar_para_solicitacao(page)
             await _preencher_carteirinha(page, partes, evidencias)
             await _selecionar_carater(page, evidencias)
-            frame = await _preencher_cabecalho(page, crm, nome, evidencias)
+            frame = await _preencher_cabecalho(page, crm, nome, evidencias, guia_prestador)
 
             # Procedimentos — HARD STOP (I1): TODOS entram, senao aborta antes
             # de Validar/Confirmar (nada de guia parcial).
@@ -381,9 +386,9 @@ async def executar(job: dict) -> dict:
             await _ui.snap(page, "pre_gravar", evidencias)
             await _gravar(frame, page, evidencias)
 
-            # Captura conservadora do protocolo (I3). Mapeamento fino do portal
-            # fica na varredura; aqui chamamos o helper pos-Confirmar.
-            return await _capturar_resultado(page, job, evidencias)
+            # Captura conservadora do protocolo (I3): casa na Consulta pelo
+            # numero do prestador que geramos (deterministico).
+            return await _capturar_resultado(page, guia_prestador, evidencias)
 
     except SubmitAbortado as e:
         return {"status": "erro_submit", "numero_protocolo": None,
@@ -400,20 +405,18 @@ async def executar(job: dict) -> dict:
                 "detalhe": traceback.format_exc()}
 
 
-async def _capturar_resultado(page, job, evidencias):
-    """Captura o numero da autorizacao/protocolo pos-Confirmar. Conservador
-    (I3): se nao casar com seguranca, retorna requer_captura_manual.
-
-    NOTA: o seletor/local exato do protocolo no SulAmerica sera' mapeado na
-    sondagem ao vivo do portal; ate' la' este helper devolve captura manual.
-    """
+async def _capturar_resultado(page, guia_prestador, evidencias):
+    """Captura o protocolo pos-Confirmar pela Consulta, casando pelo numero do
+    prestador (unico). Conservador (I3): sem match seguro -> captura manual."""
     await _ui.snap(page, "resultado_final", evidencias)
-    protocolo = await varredura.capturar_protocolo_pos_envio(page)
+    protocolo = await varredura.buscar_guia_por_prestador(page, guia_prestador)
     if protocolo:
         return {"status": "protocolado", "numero_protocolo": protocolo,
                 "evidencias": evidencias,
-                "mensagem": "Solicitacao SulAmerica enviada e protocolo capturado."}
+                "mensagem": "Solicitacao SulAmerica enviada e protocolo capturado "
+                            f"(Nº Guia {protocolo}, guia prestador {guia_prestador})."}
     return {"status": "protocolado", "numero_protocolo": None,
             "requer_captura_manual": True, "evidencias": evidencias,
-            "mensagem": ("Enviado, mas protocolo nao capturado com seguranca. "
-                         "Conferir pelo screenshot resultado_final / historico.")}
+            "mensagem": ("Enviado (guia prestador "
+                         f"{guia_prestador}), mas protocolo nao casado na Consulta. "
+                         "Conferir pelo screenshot resultado_final / Consulta.")}
