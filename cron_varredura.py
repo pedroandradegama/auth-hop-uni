@@ -21,12 +21,16 @@ import config
 import callback
 from adapters.unimed_recife import coletar as coletar_unimed
 from adapters.sassepe import coletar as coletar_sassepe
+from adapters.sulamerica import coletar as coletar_sulamerica
 
 
 # (convenio, coletar async(janela_dias)->list). Adicione convenios aqui.
+# NOTA: a varredura do SulAmerica ainda e' skeleton (retorna [] sem efeito) ate'
+# a sondagem do historico do portal; registrado aqui para nao esquecer.
 _VARREDURAS = [
     ("unimed_recife", coletar_unimed),
     ("sassepe", coletar_sassepe),
+    ("sulamerica", coletar_sulamerica),
 ]
 
 

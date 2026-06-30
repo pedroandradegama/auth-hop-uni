@@ -36,6 +36,7 @@ _ADAPTERS = {
     "unimed_recife": "adapters.unimed_recife",
     "amil": "adapters.amil",
     "sassepe": "adapters.sassepe",
+    "sulamerica": "adapters.sulamerica",
 }
 
 
