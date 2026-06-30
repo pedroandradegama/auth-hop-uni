@@ -18,7 +18,7 @@ SUBTIPOS_VALIDOS = set(config.SUBTIPO_VALUE.keys())  # {"RM", "TC"}
 # Convenios cujo portal NAO usa sub_tipo RM/TC (codigo TUSS vai direto; ex.:
 # Sassepe, onde a Tabela e' sempre 22 e o exame pode ser mamografia/US/etc.).
 # Para esses, sub_tipo e' livre/opcional. Os demais (Unimed) exigem RM/TC.
-CONVENIOS_SEM_SUBTIPO = {"sassepe"}
+CONVENIOS_SEM_SUBTIPO = {"sassepe", "sulamerica"}
 
 
 class ExameItem(BaseModel):

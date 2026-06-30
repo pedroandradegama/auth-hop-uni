@@ -1,0 +1,16 @@
+{
+  "job_id": "c1d2e3f4-0000-0000-0000-000000000001",
+  "idempotency_key": "c1d2e3f4-0000-0000-0000-000000000001",
+  "org_id": "imag-org-uuid",
+  "convenio": "sulamerica",
+  "paciente_cadastro_id": "uuid-do-golden-record-ou-null",
+  "paciente_nome": "FULANO DE TAL DA SILVA",
+  "carteirinha": "123 45678 9012 3456 7890",
+  "medico": "16188 NUBIA ROSA LOPES",
+  "codigos": [
+    { "codigo_tuss": "40901114", "nome": "USG MAMAS" }
+  ],
+  "anexos": [
+    { "url": "https://<storage-hop>/signed/pedido-medico.pdf", "nome": "pedido.pdf" }
+  ]
+}
