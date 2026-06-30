@@ -75,10 +75,12 @@ def _schema_carteirinha_sem_subtipo():
 
 def _submit_preflight_erros():
     # sem rede: preflight deve falhar cedo (carteirinha invalida).
-    from adapters.sulamerica import submit
-    r = asyncio.run(submit.executar({"carteirinha": "123", "medico": "1 X",
-                                     "codigos": [{"codigo_tuss": "1"}],
-                                     "arquivos": ["/tmp/x.pdf"]}))
+    # NB: 'adapters.sulamerica.submit' resolve para a FUNCAO (alias no __init__);
+    # o modulo e' importado pelo caminho completo.
+    from adapters.sulamerica.submit import executar
+    r = asyncio.run(executar({"carteirinha": "123", "medico": "1 X",
+                              "codigos": [{"codigo_tuss": "1"}],
+                              "arquivos": ["/tmp/x.pdf"]}))
     assert r["status"] == "erro_submit", r
     assert "Carteirinha" in r["mensagem"], r
 
