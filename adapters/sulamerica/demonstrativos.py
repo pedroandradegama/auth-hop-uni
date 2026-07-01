@@ -54,15 +54,16 @@ const _o = window.open;
 window.open = function(u){ try { window.__urls.push('' + u); } catch(e){} return null; };
 """
 
-# JS: seta o período (value + eventos) e dispara a pesquisa
+# JS: seta o período (value + eventos) e dispara a pesquisa.
+# Forma arrow recebendo o arg do Playwright (evaluate injeta 1 parâmetro, não `arguments`).
 _SET_PERIODO = """
-(function(ini, fim){
+([ini, fim]) => {
   function setv(id, v){ var e = document.getElementById(id); if(!e) return;
     e.value = v; e.dispatchEvent(new Event('input', {bubbles:true}));
     e.dispatchEvent(new Event('change', {bubbles:true})); }
   setv('data-inicial', ini); setv('data-final', fim);
   var b = document.getElementById('btnPesquisar'); if(b) b.click();
-})(arguments[0], arguments[1]);
+}
 """
 
 # JS: clica o link 'xml' de Análise de Conta Médica (links[3]) de cada linha da tabela.
