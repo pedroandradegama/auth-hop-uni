@@ -258,3 +258,115 @@ Padrão atual da autorização (reusar a forma):
 - `adapters/*/varredura.py` — padrão de **coleta** (o mais parecido com baixar demonstrativo).
 - `worker.py`, `callback.py`, `schemas.py` — espinha (poll, HMAC, contrato).
 - `~/Developer/browser-harness/SKILL.md` — sondagem ao vivo.
+
+---
+
+## Apêndice A — SulAmérica: Demonstrativo de Análise de Conta (MAPEADO AO VIVO)
+
+> Sondagem ao vivo no portal real (2026-07-01), login do prestador IMAG. **Fluxo inteiro validado, incluindo download do XML.** Esta é a receita concreta para o primeiro convênio da nova frente.
+
+### A.1 Login & sessão — REUSA o adapter de autorização
+O demonstrativo fica **no MESMO portal e MESMO login** da autorização SulAmérica (não é site/perfil distinto). Portanto **reuse `adapters/sulamerica/sessao.login()` e `navegador()`** direto (Firefox, `SULAMERICA_CODIGO`/`USUARIO`/`SENHA`). Não precisa de credencial nova.
+
+Recomendação: implementar como **novo verbo no adapter existente** — `adapters/sulamerica/demonstrativos.py` com `async coletar_demonstrativos(janela) -> dict`, exposto no `__init__.py`. (Se outros convênios tiverem login distinto para o demonstrativo, aí sim adapter/módulo próprio — decisão por convênio.)
+
+### A.2 Navegação
+- URL direta: `https://saude.sulamericaseguros.com.br/prestador/servicos-medicos/demonstrativos-tiss-3/demonstrativo-de-pagamento/`
+- Menu equivalente: **Serviços Médicos → Demonstrativos TISS 3 → Demonstrativo de Pagamento**.
+- ⚠️ **Popup de pesquisa NPS** ("SUA OPINIÃO É ESSENCIAL PARA NÓS") abre por cima ao carregar. **`Escape` fecha** (ou clicar fora). Trate sempre — senão o overlay atrapalha.
+
+### A.3 Filtro de período
+- Campos: `#data-inicial` e `#data-final` (formato `dd/mm/yyyy`). Setar **value direto + eventos** (jQuery, mesma técnica da máscara do submit); digitar char-a-char quebra.
+- Botão: `#btnPesquisar`.
+- ⚠️ **SulAmérica guarda no máximo ~3 meses** de histórico. Coletar por **mês fechado** (01→30/31). Janela padrão sugerida: mês anterior fechado.
+
+```python
+await page.evaluate("""(function(){
+  function setv(id,v){var e=document.getElementById(id); e.value=v;
+    e.dispatchEvent(new Event('input',{bubbles:true}));
+    e.dispatchEvent(new Event('change',{bubbles:true}));}
+  setv('data-inicial','01/06/2026'); setv('data-final','30/06/2026');
+  document.getElementById('btnPesquisar').click();
+})()""")
+```
+
+### A.4 Tabela de resultado
+Colunas: `Data Pagamento | Data Lim. Recurso | Valor Apresentado | Valor Processado | Valor Liberado | Demo. Pagto. | Demo. An. Ct. Médica`. Uma linha por **data de pagamento**.
+
+Cada linha tem **5 links** (texto): `[pdf, xml, pdf, xml, csv]`:
+- `links[0]`/`links[1]` = **Demo. Pagto.** (pdf / xml)
+- `links[2]`/`links[3]` = **Demo. An. Ct. Médica** (pdf / xml) ← **o que queremos**
+- `links[4]` = csv
+
+**O alvo (XML de análise de conta) é `links[3]` de cada linha.** Os links têm `href="#"` e **handler jQuery** (sem `onclick` inline) — não dá pra ler a URL do DOM; ela é gerada no clique.
+
+Filtro de linha (JS): `tr` com 6–8 `td` e uma data `dd/mm/yyyy`; pegar os `<a>` cujo texto é exatamente `pdf|xml|csv`.
+
+### A.5 Mecanismo de download — `window.open` → **URL assinada GCS**
+O clique no `xml` chama **`window.open()`** para uma **URL pré-assinada do Google Cloud Storage**:
+```
+https://storage.googleapis.com/contasmedicastransf/DEMONSTRATIVO/DC/20260610/
+  DC_000043_20260610_100000014967_001.zip?GoogleAccessId=...&Expires=...&Signature=...
+```
+- `DC` = Demonstrativo de Conta (análise de conta). Path: `.../DEMONSTRATIVO/DC/<AAAAMMDD>/`.
+- Nome: `DC_<seq>_<dataPagamento AAAAMMDD>_<codPrestador>_001.zip`.
+- **É `.zip`** — o XML fica **dentro** (`..._001.XML`, TISS `tipoTransacao=DEMONSTRATIVO_ANALISE_CONTA`, encoding ISO-8859-1).
+- **A URL é auto-autorizada** (assinatura GCS) → **baixa com HTTP GET puro, SEM cookie/sessão**. `Expires` é efetivamente não-expirável. Validado: `curl` → HTTP 200, `application/zip`.
+
+### A.6 Receita do coletor (Playwright)
+Interceptar `window.open` para **capturar as URLs** (não deixa abrir aba/download nativo), clicar cada `links[3]`, depois baixar com **httpx** (sem cookies) e extrair o XML do zip:
+
+```python
+# 1. hook: captura as URLs e impede abrir aba
+await page.evaluate("""window.__urls=[]; const _o=window.open;
+    window.open=function(u){ window.__urls.push(''+u); return null; };""")
+
+# 2. para cada linha, clicar o links[3] (xml An.Ct.Médica)
+#    (localizar por: tr com data dd/mm/yyyy -> <a> texto pdf|xml|csv -> índice 3)
+#    clicar via coordenada OU via a.click() no JS.
+
+# 3. ler as URLs capturadas
+urls = await page.evaluate("window.__urls")
+
+# 4. baixar cada uma com httpx (assinada, sem cookies) e extrair o XML
+import httpx, io, zipfile
+async with httpx.AsyncClient(timeout=60, follow_redirects=True) as cli:
+    for u in urls:
+        r = await cli.get(u); r.raise_for_status()
+        zf = zipfile.ZipFile(io.BytesIO(r.content))
+        nome_xml = next(n for n in zf.namelist() if n.upper().endswith(".XML"))
+        conteudo = zf.read(nome_xml)   # bytes ISO-8859-1
+        # validar (parse XML, checar tipoTransacao), salvar, hash p/ idempotência
+```
+Alternativa: Playwright `context.on("page")`/`expect_popup()` — mas `.zip` vira **download event**, mais chato. A interceptação de `window.open` + httpx é mais limpa **porque as URLs são assinadas**.
+
+### A.7 Contrato de retorno sugerido
+```python
+{
+  "status": "coletado" | "erro_coleta" | "sem_novidade",
+  "competencia": "2026-06",
+  "arquivos": [{
+    "nome": "DC_000043_20260610_100000014967_001.XML",
+    "data_pagamento": "2026-06-10",
+    "tipo_transacao": "DEMONSTRATIVO_ANALISE_CONTA",
+    "path_local": "...", "sha256": "...", "mime": "application/xml"
+  }],
+  "evidencias": [ ... ],
+  "mensagem": "..."
+}
+```
+- **Idempotência (I3):** chave = nome do arquivo (`DC_<seq>_<data>_<cod>_001`) + `sha256`. Não re-baixar/duplicar no HOP.
+- **Validação:** parse do XML + conferir `tipoTransacao=DEMONSTRATIVO_ANALISE_CONTA`; se não parsear ou vier vazio → `erro_coleta` (não afirmar sucesso).
+
+### A.8 Também disponível na mesma tela (fora de escopo agora, mas mapeado)
+- Coluna **Demo. Pagto.** (`links[1]` xml / `links[0]` pdf) — demonstrativo de pagamento (outro `tipoTransacao`).
+- `csv` por linha; botões **ATS**, **RGE**, **Solicitar Demonstrativo Excel**.
+- Botão **Gerenciar Emails** (`#btnGerenciarEmails`) — envio automático por email (possível fonte alternativa, não usada aqui).
+
+### A.9 Checklist específico SulAmérica
+1. `adapters/sulamerica/demonstrativos.py` → `coletar_demonstrativos(janela)`; reusa `sessao.login`/`navegador`.
+2. Navegar à URL do demonstrativo → **fechar survey (Escape)** → setar período (mês fechado, ≤3 meses) → `#btnPesquisar`.
+3. Interceptar `window.open`, clicar cada `links[3]`, coletar URLs, **httpx GET (sem cookies)**, unzip, extrair `.XML`.
+4. Validar XML (tipoTransacao), hash, contrato de retorno.
+5. Devolver ao HOP (storage assinado + metadados) — não trafegar bytes grandes no callback.
+6. Disparo: verbo na fila (clique no HOP) e/ou cron mensal (mês fechado).
