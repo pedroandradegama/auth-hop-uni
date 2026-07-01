@@ -10,6 +10,7 @@ Deploy: cron/serviço em /opt/imag-autorizador (venv/). Rodar isolado do worker 
 """
 import asyncio
 import importlib
+import os
 import signal
 import traceback
 
@@ -17,6 +18,10 @@ import httpx
 
 import config
 import callback
+
+# MODO=cron → drena a fila e encerra (chamado periodicamente por cron; coleta é de baixa frequência).
+# Qualquer outro valor → serviço contínuo (poll loop).
+_MODO_CRON = os.environ.get("MODO", "").lower() == "cron"
 
 # whitelist convênio → módulo do adapter (só os que implementam coletar_demonstrativos)
 _ADAPTERS = {
@@ -85,7 +90,7 @@ async def main():
             loop.add_signal_handler(sig, _parar.set)
         except NotImplementedError:
             pass
-    print("[worker-demonstrativo] iniciado.", flush=True)
+    print(f"[worker-demonstrativo] iniciado (modo={'cron' if _MODO_CRON else 'serviço'}).", flush=True)
     async with httpx.AsyncClient(timeout=180) as client:
         while not _parar.is_set():
             try:
@@ -93,6 +98,9 @@ async def main():
             except Exception:
                 print("[poll-erro]", traceback.format_exc(), flush=True)
                 processou = False
+            # cron: sem job (204) = fila drenada → encerra.
+            if _MODO_CRON and not processou:
+                break
             intervalo = config.POLL_INTERVAL_SEG if processou else config.POLL_INTERVAL_OCIOSO_SEG
             try:
                 await asyncio.wait_for(_parar.wait(), timeout=intervalo)
