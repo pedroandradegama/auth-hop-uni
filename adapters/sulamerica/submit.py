@@ -213,6 +213,30 @@ async def _preencher_cabecalho(page, crm, nome, evidencias, guia_prestador):
     return frame
 
 
+# ── Modal jQuery UI ──────────────────────────────────────────────────────────
+async def _fechar_modal(frame, page):
+    """Fecha qualquer alerta/modal aberto ('x Fechar'/'Fechar') e espera o
+    overlay (.ui-widget-overlay) sumir. O overlay intercepta pointer events —
+    se ficar aberto, TODO clique seguinte falha (foi o que travou o anexo)."""
+    try:
+        btn = frame.locator(
+            "a:has-text('Fechar'), button:has-text('Fechar'), "
+            ".ui-dialog-titlebar-close"
+        ).first
+        if await btn.count() > 0:
+            await btn.click(timeout=4000)
+    except Exception:
+        pass
+    # espera o overlay desaparecer (ate' ~5s)
+    for _ in range(10):
+        try:
+            if await page.locator(".ui-widget-overlay").count() == 0:
+                break
+        except Exception:
+            break
+        await page.wait_for_timeout(500)
+
+
 # ── Procedimentos ────────────────────────────────────────────────────────────
 async def _adicionar_procedimento(frame, page, codigo, quantidade=1):
     """Adiciona um codigo UMA vez (portal rejeita duplicado). qty>1 -> edita
@@ -228,17 +252,25 @@ async def _adicionar_procedimento(frame, page, codigo, quantidade=1):
         await frame.locator("#btn-incluir-procedimento").click()
         await page.wait_for_timeout(1800)
 
-        # Alerta de procedimento nao permitido.
+        # Alertas em modal jQuery UI (o overlay bloqueia qualquer clique depois,
+        # entao SEMPRE fechamos). Dois casos conhecidos:
+        #  - "Não foi possível inserir esse procedimento" -> nao permitido (erro).
+        #  - "Não é possível inserir dois procedimentos com códigos iguais" ->
+        #    codigo ja' presente (idempotente): fecha e segue (o dedup deve
+        #    evitar, mas defende contra corrida/reenvio).
         try:
-            alerta = frame.locator("text=Não foi possível inserir esse procedimento")
-            if await alerta.count() > 0:
-                with_close = frame.locator(
-                    "a:has-text('Fechar'), button:has-text('Fechar')"
-                ).first
-                await with_close.click()
-                await page.wait_for_timeout(800)
-                return False, (f"Codigo '{codigo}': nao permitido pela operadora "
-                               "para este plano.")
+            nao_permitido = await frame.locator(
+                "text=Não foi possível inserir esse procedimento"
+            ).count()
+            duplicado = await frame.locator(
+                "text=Não é possível inserir dois procedimentos"
+            ).count()
+            if nao_permitido or duplicado:
+                await _fechar_modal(frame, page)
+                if nao_permitido:
+                    return False, (f"Codigo '{codigo}': nao permitido pela "
+                                   "operadora para este plano.")
+                return True, None  # duplicado: codigo ja' esta' na tabela
         except Exception:
             pass
 
@@ -368,13 +400,27 @@ async def executar(job: dict) -> dict:
 
             # Procedimentos — HARD STOP (I1): TODOS entram, senao aborta antes
             # de Validar/Confirmar (nada de guia parcial).
+            # DEDUP por codigo TUSS: o portal rejeita 2 procedimentos com codigo
+            # igual ("Não é possível inserir dois procedimentos com códigos
+            # iguais"). No TUSS, US de articulacao e' 1 codigo p/ qualquer
+            # articulacao — entao 2 exames (ombro+joelho) viram 40901220 qty 2.
+            agregados: dict[str, int] = {}
+            ordem: list[str] = []
             for item in codigos:
-                codigo_portal = codigos_mod.resolver_codigo_portal(item["codigo_tuss"])
-                qty = int(item.get("quantidade") or item.get("qty") or 1)
-                ok, erro = await _adicionar_procedimento(frame, page, codigo_portal, qty)
+                cp = codigos_mod.resolver_codigo_portal(item["codigo_tuss"])
+                q = int(item.get("quantidade") or item.get("qty") or 1)
+                if cp not in agregados:
+                    ordem.append(cp)
+                agregados[cp] = agregados.get(cp, 0) + q
+            for cp in ordem:
+                ok, erro = await _adicionar_procedimento(frame, page, cp, agregados[cp])
                 if not ok:
                     await _ui.snap(page, "erro_procedimento", evidencias)
                     raise SubmitAbortado(f"Procedimento nao adicionado: {erro}")
+
+            # Defesa: garante que nenhum modal/overlay ficou aberto (o overlay
+            # do jQuery UI bloqueia o clique em 'Anexar').
+            await _fechar_modal(frame, page)
 
             # Anexos — HARD STOP (I1): TODOS confirmam.
             for arquivo in arquivos:
