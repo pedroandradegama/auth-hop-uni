@@ -81,11 +81,14 @@ def _data_pagamento_do_nome(nome: str) -> str | None:
     return None
 
 
-# JS: intercepta window.open guardando as URLs (não abre aba/download nativo)
+# JS: window.open PASSTHROUGH — registra a URL E ainda abre (deixa a requisição ao GCS acontecer,
+# capturada também pelo listener de rede do Playwright, que é a via mais robusta).
 _HOOK_OPEN = """
-window.__urls = [];
-const _o = window.open;
-window.open = function(u){ try { window.__urls.push('' + u); } catch(e){} return null; };
+window.__urls = window.__urls || [];
+(function(){
+  var _o = window.open;
+  window.open = function(u){ try { window.__urls.push('' + u); } catch(e){} return _o.apply(window, arguments); };
+})();
 """
 
 # JS: seta o período (value + eventos) e dispara a pesquisa.
@@ -159,6 +162,17 @@ async def coletar_demonstrativos(data_ini: str | None = None, data_fim: str | No
             ctx = page  # fallback: frame principal
         num_frames = len(list(page.frames))
 
+        # captura de URL por rede/popup/download (via Playwright) — robusto contra jQuery/window.open
+        capturas_net: list[str] = []
+
+        def _cap(u: str | None):
+            if u and ("storage.googleapis.com" in u or u.lower().split("?")[0].endswith(".zip")):
+                capturas_net.append(u)
+
+        page.on("request", lambda req: _cap(req.url))
+        page.on("download", lambda d: _cap(d.url))
+        page.context.on("page", lambda p: _cap(p.url))
+
         await ctx.evaluate(_HOOK_OPEN)
         if ini_br and fim_br:
             await ctx.evaluate(_SET_PERIODO, [ini_br, fim_br])
@@ -183,21 +197,21 @@ async def coletar_demonstrativos(data_ini: str | None = None, data_fim: str | No
         except Exception as e:
             return {"status": "erro_coleta", "arquivos": [], "evidencias": evidencias,
                     "mensagem": f"Falha ao localizar/clicar os XML: {e}"}
-        await page.wait_for_timeout(2500)
-        print(f"[clicar] {clic}", flush=True)
-        evidencias.append({"etapa": "clicar", **clic})
-
-        # URLs: as capturadas via window.open + hrefs que já sejam URL real (http)
+        await page.wait_for_timeout(5000)  # deixa os window.open/requisições GCS acontecerem
         capturadas: list[str] = await ctx.evaluate("window.__urls || []")
+        print(f"[clicar] {clic} | net={len(capturas_net)} janela={len(capturadas)}", flush=True)
+        evidencias.append({"etapa": "clicar", **clic, "net": len(capturas_net)})
+
+        # URLs de todas as vias: rede (GCS) + window.open + href direto
         diretas = [h for h in clic.get("hrefs", []) if str(h).lower().startswith("http")]
-        urls = [u for u in (list(capturadas) + diretas) if u and u.lower().endswith(".zip")]
+        todas = list(capturas_net) + list(capturadas) + diretas
+        urls = [u for u in todas if u and ".zip" in u.lower()]
         urls = list(dict.fromkeys(urls))  # dedup preservando ordem
 
         if not urls:
             return {"status": "sem_novidade", "arquivos": [], "evidencias": evidencias,
-                    "mensagem": (f"Nenhum XML no período. frames={num_frames}, cliques={clic.get('cliques')}, "
-                                 f"tds={clic.get('tds')}, hrefs={clic.get('hrefs')}, "
-                                 f"capturadas={len(capturadas)}, diag={diag}. Screenshot: {shot}")}
+                    "mensagem": (f"Nenhum XML no período. cliques={clic.get('cliques')}, net={len(capturas_net)}, "
+                                 f"janela={len(capturadas)}, tds={clic.get('tds')}, diag={diag}. Screenshot: {shot}")}
 
         # baixa as URLs assinadas (SEM cookies), descompacta, extrai o XML
         arquivos: list[dict] = []
