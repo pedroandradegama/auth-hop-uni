@@ -100,26 +100,26 @@ _SET_PERIODO = """
 }
 """
 
-# JS: clica o link 'xml' de Análise de Conta Médica (links[3]) de cada linha da tabela.
-# Filtro de linha: tr com 6-8 td e uma data dd/mm/yyyy; os <a> cujo texto é pdf|xml|csv.
-# Retorna quantos cliques disparou.
+# JS: clica o link 'xml' de Análise de Conta Médica (links[3]) de cada linha com data + >=4 links
+# pdf|xml|csv (SEM filtro de td — a tabela tem muitas colunas). Retorna diagnóstico + cliques.
+# ordem por linha: [pdf, xml, pdf, xml, csv] → índice 3 = xml de Análise de Conta Médica.
 _CLICAR_XMLS = """
-(function(){
-  var n = 0;
-  var trs = Array.prototype.slice.call(document.querySelectorAll('tr'));
+() => {
+  const out = { cliques: 0, tds: [], hrefs: [] };
+  const trs = Array.prototype.slice.call(document.querySelectorAll('tr'));
   trs.forEach(function(tr){
-    var tds = tr.querySelectorAll('td');
-    if (tds.length < 6 || tds.length > 9) return;
     if (!/\\d{2}\\/\\d{2}\\/\\d{4}/.test(tr.textContent)) return;
-    var links = Array.prototype.slice.call(tr.querySelectorAll('a')).filter(function(a){
-      var t = (a.textContent || '').trim().toLowerCase();
+    const links = Array.prototype.slice.call(tr.querySelectorAll('a')).filter(function(a){
+      const t = (a.textContent || '').trim().toLowerCase();
       return t === 'pdf' || t === 'xml' || t === 'csv';
     });
-    // ordem por linha: [pdf, xml, pdf, xml, csv] → índice 3 = xml Análise de Conta Médica
-    if (links.length >= 4) { links[3].click(); n++; }
+    if (links.length < 4) return;
+    out.tds.push(tr.querySelectorAll('td').length);
+    out.hrefs.push((links[3].getAttribute('href') || '').slice(0, 60));
+    try { links[3].click(); out.cliques++; } catch(e) {}
   });
-  return n;
-})();
+  return out;
+}
 """
 
 DEMO_URL = (
@@ -179,19 +179,25 @@ async def coletar_demonstrativos(data_ini: str | None = None, data_fim: str | No
         evidencias.append({"etapa": "pesquisa", "diag": diag, "screenshot": shot, "frames": num_frames})
 
         try:
-            cliques = await ctx.evaluate(_CLICAR_XMLS)
+            clic = await ctx.evaluate(_CLICAR_XMLS)
         except Exception as e:
             return {"status": "erro_coleta", "arquivos": [], "evidencias": evidencias,
                     "mensagem": f"Falha ao localizar/clicar os XML: {e}"}
-        await page.wait_for_timeout(2000)
+        await page.wait_for_timeout(2500)
+        print(f"[clicar] {clic}", flush=True)
+        evidencias.append({"etapa": "clicar", **clic})
 
-        urls: list[str] = await ctx.evaluate("window.__urls || []")
-        urls = [u for u in urls if u and u.lower().endswith(".zip")]
+        # URLs: as capturadas via window.open + hrefs que já sejam URL real (http)
+        capturadas: list[str] = await ctx.evaluate("window.__urls || []")
+        diretas = [h for h in clic.get("hrefs", []) if str(h).lower().startswith("http")]
+        urls = [u for u in (list(capturadas) + diretas) if u and u.lower().endswith(".zip")]
+        urls = list(dict.fromkeys(urls))  # dedup preservando ordem
 
         if not urls:
             return {"status": "sem_novidade", "arquivos": [], "evidencias": evidencias,
-                    "mensagem": (f"Nenhum XML no período. frames={num_frames}, ctx_is_page={ctx is page}, "
-                                 f"cliques={cliques}, diag={diag}. Screenshot: {shot}")}
+                    "mensagem": (f"Nenhum XML no período. frames={num_frames}, cliques={clic.get('cliques')}, "
+                                 f"tds={clic.get('tds')}, hrefs={clic.get('hrefs')}, "
+                                 f"capturadas={len(capturadas)}, diag={diag}. Screenshot: {shot}")}
 
         # baixa as URLs assinadas (SEM cookies), descompacta, extrai o XML
         arquivos: list[dict] = []
