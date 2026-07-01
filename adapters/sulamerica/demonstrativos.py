@@ -17,12 +17,46 @@ SulAmérica guarda ~3 meses de histórico → coletar por mês fechado.
 import base64
 import hashlib
 import io
+import os
 import zipfile
 from datetime import datetime
 
 import httpx
 
 from .sessao import navegador, login
+
+_EVID_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "evidencias_demonstrativo")
+
+
+async def _achar_frame(page, seletor, tentativas=6, espera_ms=1500):
+    """Retorna o frame (ou a própria page) que contém o seletor. Portal SulAmérica é iframe-heavy."""
+    for _ in range(tentativas):
+        for fr in [page] + list(page.frames):
+            try:
+                if await fr.query_selector(seletor):
+                    return fr
+            except Exception:
+                continue
+        await page.wait_for_timeout(espera_ms)
+    return None
+
+
+# JS de diagnóstico: o que este contexto (frame) enxerga
+_DIAG = """
+() => {
+  const trs = Array.prototype.slice.call(document.querySelectorAll('tr'));
+  let comData = 0, comLinks = 0;
+  trs.forEach(function(tr){
+    if (/\\d{2}\\/\\d{2}\\/\\d{4}/.test(tr.textContent)) comData++;
+    const l = Array.prototype.slice.call(tr.querySelectorAll('a')).filter(function(a){
+      const t=(a.textContent||'').trim().toLowerCase(); return t==='pdf'||t==='xml'||t==='csv'; });
+    if (l.length) comLinks++;
+  });
+  return { trs: trs.length, comData: comData, comLinks: comLinks,
+    temDataInicial: !!document.getElementById('data-inicial'),
+    temBtn: !!document.getElementById('btnPesquisar') };
+}
+"""
 
 
 def _br(data_iso: str | None) -> str | None:
@@ -106,34 +140,58 @@ async def coletar_demonstrativos(data_ini: str | None = None, data_fim: str | No
             return {"status": "erro_coleta", "arquivos": [], "evidencias": evidencias,
                     "mensagem": f"Falha no login: {e}"}
 
+        os.makedirs(_EVID_DIR, exist_ok=True)
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+
         await page.goto(DEMO_URL, wait_until="domcontentloaded")
-        await page.wait_for_timeout(2500)
-        # fecha o popup NPS (best-effort)
-        try:
-            await page.keyboard.press("Escape")
-            await page.wait_for_timeout(500)
-        except Exception:
-            pass
+        await page.wait_for_timeout(3000)
+        # fecha o popup NPS (best-effort; 2x Escape + clique fora)
+        for _ in range(2):
+            try:
+                await page.keyboard.press("Escape")
+                await page.wait_for_timeout(400)
+            except Exception:
+                pass
 
-        await page.evaluate(_HOOK_OPEN)
+        # o conteúdo do demonstrativo pode estar num iframe → acha o frame com os campos
+        ctx = await _achar_frame(page, "#data-inicial, #btnPesquisar")
+        if ctx is None:
+            ctx = page  # fallback: frame principal
+        num_frames = len(list(page.frames))
 
+        await ctx.evaluate(_HOOK_OPEN)
         if ini_br and fim_br:
-            await page.evaluate(_SET_PERIODO, [ini_br, fim_br])
-            await page.wait_for_timeout(4000)  # portal TISS é lento
+            await ctx.evaluate(_SET_PERIODO, [ini_br, fim_br])
+            await page.wait_for_timeout(6000)  # portal TISS é lento; tabela via AJAX
+
+        diag = {}
+        try:
+            diag = await ctx.evaluate(_DIAG)
+        except Exception as e:
+            diag = {"erro_diag": str(e)}
+
+        shot = os.path.join(_EVID_DIR, f"{ts}_demonstrativo.png")
+        try:
+            await page.screenshot(path=shot, full_page=True)
+        except Exception:
+            shot = None
+        print(f"[diag] frames={num_frames} ctx_is_page={ctx is page} diag={diag} shot={shot}", flush=True)
+        evidencias.append({"etapa": "pesquisa", "diag": diag, "screenshot": shot, "frames": num_frames})
 
         try:
-            cliques = await page.evaluate(_CLICAR_XMLS)
+            cliques = await ctx.evaluate(_CLICAR_XMLS)
         except Exception as e:
             return {"status": "erro_coleta", "arquivos": [], "evidencias": evidencias,
                     "mensagem": f"Falha ao localizar/clicar os XML: {e}"}
-        await page.wait_for_timeout(1500)
+        await page.wait_for_timeout(2000)
 
-        urls: list[str] = await page.evaluate("window.__urls || []")
+        urls: list[str] = await ctx.evaluate("window.__urls || []")
         urls = [u for u in urls if u and u.lower().endswith(".zip")]
 
         if not urls:
             return {"status": "sem_novidade", "arquivos": [], "evidencias": evidencias,
-                    "mensagem": f"Nenhum XML de análise de conta no período ({cliques} linha(s) varrida(s))."}
+                    "mensagem": (f"Nenhum XML no período. frames={num_frames}, ctx_is_page={ctx is page}, "
+                                 f"cliques={cliques}, diag={diag}. Screenshot: {shot}")}
 
         # baixa as URLs assinadas (SEM cookies), descompacta, extrai o XML
         arquivos: list[dict] = []
