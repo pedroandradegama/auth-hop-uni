@@ -77,20 +77,43 @@ async def coletar_demonstrativos(data_ini: str | None = None, data_fim: str | No
         except Exception:
             pass
 
-        # seleciona o mês (M-2). Playwright rola o carrossel + clica.
-        try:
-            botao_mes = page.get_by_role("button", name=re.compile(rf"^{mes}\b", re.I)).first
-            await botao_mes.scroll_into_view_if_needed(timeout=8000)
-            await botao_mes.click(timeout=8000)
-        except Exception:
-            # fallback: clique via JS no botão do mês
-            ok = await page.evaluate(
-                """(mes)=>{const el=[...document.querySelectorAll('button,[role=button]')]
-                    .find(e=>new RegExp('^'+mes,'i').test((e.textContent||'').trim()));
-                    if(el){el.click();return true;}return false;}""", mes)
-            if not ok:
-                return {"status": "erro_coleta", "arquivos": [], "evidencias": evidencias,
-                        "mensagem": f"Mês {mes}/{ano} não encontrado no carrossel."}
+        # seleciona o mês (M-2). As tiles de mês são DIVs (não <button>): acha por texto + tamanho,
+        # traz p/ a janela via seta '<' se preciso, e clica com POINTER REAL (mouse.click) — SPA React.
+        async def _tiles():
+            return await page.evaluate(
+                """()=>{const out=[];document.querySelectorAll('*').forEach(function(e){
+                    const t=(e.textContent||'').trim();const b=e.getBoundingClientRect();
+                    if(/^(JAN|FEV|MAR|ABR|MAI|JUN|JUL|AGO|SET|OUT|NOV|DEZ)/.test(t)&&t.length<16
+                       &&b.width>110&&b.width<270&&b.height>20&&b.height<130)
+                      out.push({t:t.slice(0,14),x:Math.round(b.x+b.width/2),y:Math.round(b.y+b.height/2)});});
+                    return out;}"""
+            )
+        vw = 1920
+        tiles = await _tiles()
+        alvo = next((c for c in tiles if c["t"].upper().startswith(mes)), None)
+        tentativas = 0
+        while (alvo is None or alvo["x"] < 30 or alvo["x"] > vw - 30) and tentativas < 14:
+            # clica a seta '<' (elemento clicável pequeno mais à esquerda, perto do topo do strip)
+            await page.evaluate(
+                """()=>{const c=[...document.querySelectorAll('button,[role=button],svg,div')]
+                    .filter(e=>{const b=e.getBoundingClientRect();return b.width>10&&b.width<64&&b.height>10&&b.height<64&&b.y<320&&b.x<160;});
+                    c.sort((a,b)=>a.getBoundingClientRect().x-b.getBoundingClientRect().x);if(c[0])c[0].click();}"""
+            )
+            await page.wait_for_timeout(700)
+            tiles = await _tiles()
+            alvo = next((c for c in tiles if c["t"].upper().startswith(mes)), None)
+            tentativas += 1
+
+        print(f"[mes] alvo={mes}/{ano} tiles={tiles}", flush=True)
+        if alvo is None or alvo["x"] < 30 or alvo["x"] > vw - 30:
+            shot = os.path.join(_EVID_DIR, f"{ts}_sassepe_mes.png")
+            try:
+                await page.screenshot(path=shot, full_page=True)
+            except Exception:
+                shot = None
+            return {"status": "erro_coleta", "arquivos": [], "evidencias": evidencias,
+                    "mensagem": f"Mês {mes}/{ano} não posicionável no carrossel. tiles={tiles}. Screenshot: {shot}"}
+        await page.mouse.click(alvo["x"], alvo["y"])
         await page.wait_for_timeout(2500)
 
         # localiza o botão "Baixar XML" (seção Extrato de Produção)
