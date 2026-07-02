@@ -108,25 +108,21 @@ async def coletar_demonstrativos(data_ini: str | None = None, data_fim: str | No
             return {"status": "erro_coleta", "arquivos": [], "evidencias": evidencias,
                     "mensagem": f"Mês {mes}/{ano} não encontrado. setas={setas} tiles={tiles}. Screenshot: {shot}"}
 
-        # se a tile está sob o overlay à esquerda, empurra p/ a direita clicando a seta '<'
-        # (dispatch seguro; SVGElement não tem .click). Exclui tiles de mês dos candidatos.
-        tentativas = 0
-        while alvo["x"] < CLARO and tentativas < 14:
-            await page.evaluate(
-                """()=>{function sc(e){e.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true}));}
-                    const c=[...document.querySelectorAll('button,[role=button],svg,div')]
-                      .filter(e=>{const b=e.getBoundingClientRect();const t=(e.textContent||'').trim();
-                        return b.width>8&&b.width<52&&b.height>8&&b.height<52&&b.y>230&&b.y<330&&b.x<CLARO_MARK
-                          && !/JAN|FEV|MAR|ABR|MAI|JUN|JUL|AGO|SET|OUT|NOV|DEZ/.test(t);});
-                    c.sort((a,b)=>a.getBoundingClientRect().x-b.getBoundingClientRect().x);if(c[0])sc(c[0]);}""".replace("CLARO_MARK", str(CLARO))
-            )
-            await page.wait_for_timeout(700)
-            tiles = await _tiles()
-            alvo = next((c for c in tiles if c["t"].upper().startswith(mes)), alvo)
-            tentativas += 1
-
-        cx = max(alvo["x"], CLARO)
-        print(f"[mes] alvo={mes}/{ano} pos={alvo} click_x={cx} tent={tentativas}", flush=True)
+        # a tile está sob o overlay à esquerda (x<190) → rola o carrossel p/ centralizá-la
+        # (scrollIntoView nativo no container de overflow-x). Depois reposiciona.
+        rolou = await page.evaluate(
+            """(mes)=>{const tile=[...document.querySelectorAll('*')].find(function(e){
+                    const t=(e.textContent||'').trim();const b=e.getBoundingClientRect();
+                    return new RegExp('^'+mes).test(t)&&t.length<16&&b.width>110&&b.width<270&&b.height>20&&b.height<130;});
+                if(!tile) return false;
+                tile.scrollIntoView({inline:'center',block:'nearest',behavior:'instant'});
+                return true;}""", mes
+        )
+        await page.wait_for_timeout(1200)
+        tiles = await _tiles()
+        alvo = next((c for c in tiles if c["t"].upper().startswith(mes)), alvo)
+        cx = alvo["x"] if alvo["x"] >= CLARO else max(alvo["x"], CLARO)
+        print(f"[mes] alvo={mes}/{ano} rolou={rolou} pos={alvo} click_x={cx}", flush=True)
         await page.mouse.click(cx, alvo["y"])
         await page.wait_for_timeout(3000)
 
