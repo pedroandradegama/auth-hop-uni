@@ -39,6 +39,15 @@ def sassepe_pass() -> str:
     return _req("SASSEPE_PASS")
 
 
+# Credenciais do DEMONSTRATIVO (perfil distinto do de autorizacao). Sem default: falha cedo.
+def sassepe_demo_user() -> str:
+    return _req("SASSEPE_DEMO_USER")
+
+
+def sassepe_demo_pass() -> str:
+    return _req("SASSEPE_DEMO_PASS")
+
+
 # ── Workspace (perfil escolhido apos login) ──────────────────────────────
 # O card do workspace e' identificado por conter estes dois textos.
 WORKSPACE_MARCADORES = ("Workspace", "prestadores")

@@ -20,6 +20,7 @@ import zipfile
 from datetime import datetime
 
 from .sessao import navegador, login
+from . import config
 
 _MESES = ["JAN", "FEV", "MAR", "ABR", "MAI", "JUN", "JUL", "AGO", "SET", "OUT", "NOV", "DEZ"]
 _EVID_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "evidencias_demonstrativo")
@@ -44,10 +45,11 @@ async def coletar_demonstrativos(data_ini: str | None = None, data_fim: str | No
 
     async with navegador() as page:
         try:
-            await login(page)
+            # perfil do DEMONSTRATIVO (distinto do de autorização)
+            await login(page, cred_user=config.sassepe_demo_user(), cred_senha=config.sassepe_demo_pass())
         except Exception as e:
             return {"status": "erro_coleta", "arquivos": [], "evidencias": evidencias,
-                    "mensagem": f"Falha no login Sassepe: {e}"}
+                    "mensagem": f"Falha no login Sassepe (demonstrativo): {e}"}
 
         os.makedirs(_EVID_DIR, exist_ok=True)
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
