@@ -88,15 +88,25 @@ async def coletar_demonstrativos(data_ini: str | None = None, data_fim: str | No
                       out.push({t:t.slice(0,14),x:Math.round(b.x+b.width/2),y:Math.round(b.y+b.height/2)});});
                     return out;}"""
             )
+        # zona limpa (fora do overlay dropdown-de-ano + seta) começa ~x=190
+        CLARO = 190
         vw = 1920
+        # dump das setas p/ diagnóstico (pequenos clicáveis na linha do strip)
+        setas = await page.evaluate(
+            """()=>{const out=[];document.querySelectorAll('button,[role=button],svg,path,div').forEach(function(e){
+                const b=e.getBoundingClientRect();if(b.width>8&&b.width<70&&b.height>8&&b.height<70&&b.y>230&&b.y<330)
+                  out.push({tag:e.tagName,x:Math.round(b.x+b.width/2),y:Math.round(b.y+b.height/2)});});
+                return out.slice(0,20);}"""
+        )
+        print(f"[setas] {setas}", flush=True)
         tiles = await _tiles()
         alvo = next((c for c in tiles if c["t"].upper().startswith(mes)), None)
         tentativas = 0
-        while (alvo is None or alvo["x"] < 30 or alvo["x"] > vw - 30) and tentativas < 14:
-            # clica a seta '<' (elemento clicável pequeno mais à esquerda, perto do topo do strip)
+        while (alvo is None or alvo["x"] < CLARO or alvo["x"] > vw - 30) and tentativas < 14:
+            # clica a seta '<': menor clicável mais à esquerda na linha do strip (exclui dropdown largo)
             await page.evaluate(
-                """()=>{const c=[...document.querySelectorAll('button,[role=button],svg,div')]
-                    .filter(e=>{const b=e.getBoundingClientRect();return b.width>10&&b.width<64&&b.height>10&&b.height<64&&b.y<320&&b.x<160;});
+                """()=>{const c=[...document.querySelectorAll('button,[role=button],svg')]
+                    .filter(e=>{const b=e.getBoundingClientRect();return b.width>8&&b.width<52&&b.height>8&&b.height<52&&b.y>230&&b.y<330;});
                     c.sort((a,b)=>a.getBoundingClientRect().x-b.getBoundingClientRect().x);if(c[0])c[0].click();}"""
             )
             await page.wait_for_timeout(700)
@@ -104,17 +114,26 @@ async def coletar_demonstrativos(data_ini: str | None = None, data_fim: str | No
             alvo = next((c for c in tiles if c["t"].upper().startswith(mes)), None)
             tentativas += 1
 
-        print(f"[mes] alvo={mes}/{ano} tiles={tiles}", flush=True)
-        if alvo is None or alvo["x"] < 30 or alvo["x"] > vw - 30:
+        print(f"[mes] alvo={mes}/{ano} pos={alvo} tiles={[t['t'] for t in tiles]}", flush=True)
+        if alvo is None:
             shot = os.path.join(_EVID_DIR, f"{ts}_sassepe_mes.png")
-            try:
-                await page.screenshot(path=shot, full_page=True)
-            except Exception:
-                shot = None
+            try: await page.screenshot(path=shot, full_page=True)
+            except Exception: shot = None
             return {"status": "erro_coleta", "arquivos": [], "evidencias": evidencias,
-                    "mensagem": f"Mês {mes}/{ano} não posicionável no carrossel. tiles={tiles}. Screenshot: {shot}"}
-        await page.mouse.click(alvo["x"], alvo["y"])
+                    "mensagem": f"Mês {mes}/{ano} não encontrado. setas={setas} tiles={tiles}. Screenshot: {shot}"}
+        # clica na zona limpa (evita o overlay à esquerda)
+        cx = max(alvo["x"], CLARO)
+        await page.mouse.click(cx, alvo["y"])
         await page.wait_for_timeout(2500)
+
+        # espera o "Baixar XML" renderizar (a Resumo carrega async após trocar o mês)
+        for _ in range(12):
+            existe = await page.evaluate(
+                "()=>/baixar xml/i.test((document.body.innerText||''))"
+            )
+            if existe:
+                break
+            await page.wait_for_timeout(1000)
 
         # localiza o botão "Baixar XML" (seção Extrato de Produção)
         botao_xml = page.get_by_role("button", name=re.compile("Baixar XML", re.I)).first
