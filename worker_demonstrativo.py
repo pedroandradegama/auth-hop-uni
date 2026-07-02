@@ -26,6 +26,7 @@ _MODO_CRON = os.environ.get("MODO", "").lower() == "cron"
 # whitelist convênio → módulo do adapter (só os que implementam coletar_demonstrativos)
 _ADAPTERS = {
     "sulamerica": "adapters.sulamerica",
+    "sassepe": "adapters.sassepe",
 }
 
 _parar = asyncio.Event()
