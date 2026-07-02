@@ -101,37 +101,53 @@ async def coletar_demonstrativos(data_ini: str | None = None, data_fim: str | No
         print(f"[setas] {setas}", flush=True)
         tiles = await _tiles()
         alvo = next((c for c in tiles if c["t"].upper().startswith(mes)), None)
-        tentativas = 0
-        while (alvo is None or alvo["x"] < CLARO or alvo["x"] > vw - 30) and tentativas < 14:
-            # clica a seta '<': menor clicável mais à esquerda na linha do strip (exclui dropdown largo)
-            await page.evaluate(
-                """()=>{const c=[...document.querySelectorAll('button,[role=button],svg')]
-                    .filter(e=>{const b=e.getBoundingClientRect();return b.width>8&&b.width<52&&b.height>8&&b.height<52&&b.y>230&&b.y<330;});
-                    c.sort((a,b)=>a.getBoundingClientRect().x-b.getBoundingClientRect().x);if(c[0])c[0].click();}"""
-            )
-            await page.wait_for_timeout(700)
-            tiles = await _tiles()
-            alvo = next((c for c in tiles if c["t"].upper().startswith(mes)), None)
-            tentativas += 1
-
-        print(f"[mes] alvo={mes}/{ano} pos={alvo} tiles={[t['t'] for t in tiles]}", flush=True)
         if alvo is None:
             shot = os.path.join(_EVID_DIR, f"{ts}_sassepe_mes.png")
             try: await page.screenshot(path=shot, full_page=True)
             except Exception: shot = None
             return {"status": "erro_coleta", "arquivos": [], "evidencias": evidencias,
                     "mensagem": f"Mês {mes}/{ano} não encontrado. setas={setas} tiles={tiles}. Screenshot: {shot}"}
-        # clica na zona limpa (evita o overlay à esquerda)
-        cx = max(alvo["x"], CLARO)
-        await page.mouse.click(cx, alvo["y"])
-        await page.wait_for_timeout(2500)
 
-        # espera o "Baixar XML" renderizar (a Resumo carrega async após trocar o mês)
-        for _ in range(12):
-            existe = await page.evaluate(
-                "()=>/baixar xml/i.test((document.body.innerText||''))"
+        # se a tile está sob o overlay à esquerda, empurra p/ a direita clicando a seta '<'
+        # (dispatch seguro; SVGElement não tem .click). Exclui tiles de mês dos candidatos.
+        tentativas = 0
+        while alvo["x"] < CLARO and tentativas < 14:
+            await page.evaluate(
+                """()=>{function sc(e){e.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true}));}
+                    const c=[...document.querySelectorAll('button,[role=button],svg,div')]
+                      .filter(e=>{const b=e.getBoundingClientRect();const t=(e.textContent||'').trim();
+                        return b.width>8&&b.width<52&&b.height>8&&b.height<52&&b.y>230&&b.y<330&&b.x<CLARO_MARK
+                          && !/JAN|FEV|MAR|ABR|MAI|JUN|JUL|AGO|SET|OUT|NOV|DEZ/.test(t);});
+                    c.sort((a,b)=>a.getBoundingClientRect().x-b.getBoundingClientRect().x);if(c[0])sc(c[0]);}""".replace("CLARO_MARK", str(CLARO))
             )
-            if existe:
+            await page.wait_for_timeout(700)
+            tiles = await _tiles()
+            alvo = next((c for c in tiles if c["t"].upper().startswith(mes)), alvo)
+            tentativas += 1
+
+        cx = max(alvo["x"], CLARO)
+        print(f"[mes] alvo={mes}/{ano} pos={alvo} click_x={cx} tent={tentativas}", flush=True)
+        await page.mouse.click(cx, alvo["y"])
+        await page.wait_for_timeout(3000)
+
+        # diagnóstico pós-clique: mês selecionado? extrato/baixar presentes?
+        diag = await page.evaluate(
+            """()=>{const b=document.body.innerText||'';
+                const sel=[...document.querySelectorAll('*')].find(e=>{const s=getComputedStyle(e);
+                  return /^(JAN|FEV|MAR|ABR|MAI|JUN)/.test((e.textContent||'').trim())
+                    && (e.textContent||'').trim().length<16
+                    && (s.backgroundColor.includes('rgb(')&&s.backgroundColor!=='rgba(0, 0, 0, 0)');});
+                return {tem_extrato:/extrato de produç/i.test(b), tem_baixar:/baixar xml/i.test(b),
+                        selecionado: sel?(sel.textContent||'').trim().slice(0,14):null};}"""
+        )
+        print(f"[pos-clique] {diag}", flush=True)
+        shot = os.path.join(_EVID_DIR, f"{ts}_sassepe_posmes.png")
+        try: await page.screenshot(path=shot, full_page=True)
+        except Exception: shot = None
+
+        # espera o "Baixar XML" renderizar (async após trocar o mês)
+        for _ in range(12):
+            if await page.evaluate("()=>/baixar xml/i.test((document.body.innerText||''))"):
                 break
             await page.wait_for_timeout(1000)
 
@@ -140,13 +156,8 @@ async def coletar_demonstrativos(data_ini: str | None = None, data_fim: str | No
         try:
             await botao_xml.scroll_into_view_if_needed(timeout=8000)
         except Exception:
-            shot = os.path.join(_EVID_DIR, f"{ts}_sassepe_sem_xml.png")
-            try:
-                await page.screenshot(path=shot, full_page=True)
-            except Exception:
-                shot = None
             return {"status": "sem_novidade", "arquivos": [], "evidencias": evidencias,
-                    "mensagem": f"Sem 'Baixar XML' em {mes}/{ano} (demonstrativo não disponível?). Screenshot: {shot}"}
+                    "mensagem": f"Sem 'Baixar XML' em {mes}/{ano}. diag={diag}. Screenshot: {shot}"}
 
         # clica e CAPTURA a resposta do XHR de download (o SPA autentica sozinho)
         try:
