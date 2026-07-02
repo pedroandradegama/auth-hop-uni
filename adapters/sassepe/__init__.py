@@ -3,5 +3,6 @@
 # essas duas). Espelha adapters/unimed_recife/__init__.py do molde.
 from .submit import executar as submit          # async submit(job: dict) -> dict
 from .varredura import coletar                   # async coletar(janela_dias) -> list[dict]
+from .demonstrativos import coletar_demonstrativos  # async (data_ini, data_fim) -> dict
 
 NOME = "sassepe"

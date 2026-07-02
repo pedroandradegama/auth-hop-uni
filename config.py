@@ -63,6 +63,15 @@ def worker_inbound_secret() -> str:
     return _req("WORKER_INBOUND_SECRET")
 
 
+# ── Coleta de demonstrativos (frente 2): POLL + callback próprios ────────
+def proximo_demonstrativo_url() -> str:
+    return _req("HOP_PROXIMO_DEMONSTRATIVO_URL")
+
+
+def callback_demonstrativo_url() -> str:
+    return _req("HOP_CALLBACK_DEMONSTRATIVO_URL")
+
+
 # Intervalo do poll: rapido apos processar (pode haver fila), lento quando ocioso.
 POLL_INTERVAL_SEG = int(os.environ.get("POLL_INTERVAL_SEG", "15"))
 POLL_INTERVAL_OCIOSO_SEG = int(os.environ.get("POLL_INTERVAL_OCIOSO_SEG", "60"))
