@@ -63,6 +63,27 @@ def worker_inbound_secret() -> str:
     return _req("WORKER_INBOUND_SECRET")
 
 
+# ── Verificação de senha (Camada 3 do gate): POLL + callback próprios ─────
+# Reusa WORKER_INBOUND_SECRET (poll) e HOP_CALLBACK_SECRET (callback HMAC).
+def proximo_job_verificacao_url() -> str:
+    return _req("HOP_PROXIMO_JOB_VERIFICACAO_URL")
+
+
+def callback_verificacao_url() -> str:
+    return _req("HOP_CALLBACK_VERIFICACAO_URL")
+
+
+def verificacao_habilitada() -> bool:
+    """OFF por padrao: so' liga quando algum adapter tiver o verbo `verificar`.
+    Se ligar antes, jobs reais viram erro/estrutural e disparam o circuit
+    breaker do HOP (5 estruturais consecutivas suspendem o convenio)."""
+    return os.environ.get("VERIFICACAO_HABILITADA", "false").lower() == "true"
+
+
+# Quantos submits e quantas verificacoes por ciclo de intercalamento no drain.
+VERIFICACAO_LOTE = int(os.environ.get("VERIFICACAO_LOTE", "5"))
+
+
 # Intervalo do poll: rapido apos processar (pode haver fila), lento quando ocioso.
 POLL_INTERVAL_SEG = int(os.environ.get("POLL_INTERVAL_SEG", "15"))
 POLL_INTERVAL_OCIOSO_SEG = int(os.environ.get("POLL_INTERVAL_OCIOSO_SEG", "60"))

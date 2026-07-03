@@ -143,6 +143,77 @@ async def _pollar_uma_vez(client: httpx.AsyncClient) -> bool:
     return True
 
 
+# ── Verificação de senha (Camada 3 do gate) ─────────────────────────────────
+def _adapter_por_nome_convenio(nome: str):
+    """O job de verificação traz `convenio: {id, nome, registro_ans}` (não o
+    slug). Mapeia o NOME para um adapter registrado. None se não reconhecer.
+    Normaliza acento ('Sul América' -> 'sul america')."""
+    import unicodedata
+    n = unicodedata.normalize("NFKD", nome or "").encode("ascii", "ignore").decode().lower()
+    if "unimed" in n:
+        slug = "unimed_recife"
+    elif "sassepe" in n:
+        slug = "sassepe"
+    elif "sul" in n and "amer" in n:
+        slug = "sulamerica"
+    elif "amil" in n:
+        slug = "amil"
+    else:
+        return None
+    return _carregar_adapter(slug)
+
+
+def _erro_verif(classe: str, detalhe: str) -> dict:
+    """Resultado de erro no formato do contrato (status_portal='erro')."""
+    return {"status_portal": "erro", "classe_erro": classe, "validade": None,
+            "qtd_autorizada": None, "evidencia_b64": None, "detalhe": detalhe[:400]}
+
+
+async def _pollar_verificacao_uma_vez(client: httpx.AsyncClient) -> bool:
+    """Consulta proximo-job-verificacao (POST {}). Executa adapter.verificar e
+    posta o resultado em receive-verificacao. Retorna True se processou, False
+    se 204. Toda exceção do worker vira erro/transitorio (conservador: na dúvida
+    o HOP re-tenta em vez de suspender o convênio)."""
+    headers = {"Authorization": f"Bearer {config.worker_inbound_secret()}"}
+    r = await client.post(config.proximo_job_verificacao_url(), headers=headers, json={})
+    if r.status_code == 204:
+        return False
+    r.raise_for_status()
+    job = r.json()
+
+    job_id = job.get("job_id")
+    senha = job.get("senha")
+    carteira = job.get("numero_carteira")
+    conv = job.get("convenio") or {}
+    print(f"[verif {job_id}] senha={senha} convenio={conv.get('nome')!r}", flush=True)
+
+    try:
+        adapter = _adapter_por_nome_convenio(conv.get("nome", ""))
+        if adapter is None or not hasattr(adapter, "verificar"):
+            resultado = _erro_verif(
+                "estrutural",
+                f"verbo 'verificar' indisponivel p/ convenio {conv.get('nome')!r}")
+        else:
+            # Backstop: o adapter tem timeout interno de 90s; 100s aqui é a rede
+            # de segurança do worker.
+            resultado = await asyncio.wait_for(
+                adapter.verificar(senha, carteira), timeout=100)
+    except asyncio.TimeoutError:
+        resultado = _erro_verif("transitorio", f"timeout no worker (job {job_id})")
+    except Exception as e:
+        import traceback
+        print(f"[verif {job_id}] erro: {traceback.format_exc()}", flush=True)
+        resultado = _erro_verif("transitorio", f"falha no worker: {e}")
+
+    payload = {"job_id": job_id, "resultado": resultado}
+    try:
+        await callback.enviar_verificacao(payload)
+    except Exception:
+        import traceback
+        print(f"[verif {job_id}] callback-falhou: {traceback.format_exc()}", flush=True)
+    return True
+
+
 async def loop():
     print(">> poller imag-autorizador iniciado (daemon)", flush=True)
     async with httpx.AsyncClient(timeout=30) as client:
@@ -161,23 +232,45 @@ async def loop():
     print(">> poller encerrado.", flush=True)
 
 
+async def _drenar_fila(client, pollar, lote: int, restante: int) -> int:
+    """Drena ate' `lote` itens de UMA fila (ou ate' 204/erro/`restante`).
+    Retorna quantos processou nesta rodada."""
+    n = 0
+    while n < lote and n < restante:
+        try:
+            if not await pollar(client):
+                break  # 204 -> fila vazia
+        except Exception as e:
+            print(f"[poll] erro: {e}", flush=True)
+            break
+        n += 1
+    return n
+
+
 async def drenar(max_jobs: int = 50):
-    """Modo CRON: acorda, processa todos os jobs da fila ate' 204 (vazia), e
-    encerra. Sem daemon, sem estado entre execucoes — cada rodada comeca limpa.
-    `max_jobs` e' um teto de seguranca contra loop acidental."""
+    """Modo CRON: acorda, intercala SUBMITS e VERIFICACOES ate' esvaziar as filas
+    (ou o teto `max_jobs`), e encerra. Sem daemon, sem estado entre execucoes.
+    A verificacao so' roda se VERIFICACAO_HABILITADA=true (senao jobs reais
+    virariam erro/estrutural e disparariam o circuit breaker do HOP)."""
     print(">> drenar imag-autorizador iniciado (cron)", flush=True)
-    processados = 0
+    verif_on = config.verificacao_habilitada()
+    lote = config.VERIFICACAO_LOTE
+    total_s = total_v = 0
     async with httpx.AsyncClient(timeout=30) as client:
-        while processados < max_jobs:
-            try:
-                teve = await _pollar_uma_vez(client)
-            except Exception as e:
-                print(f"[poll] erro: {e}", flush=True)
-                break
-            if not teve:
-                break  # fila vazia (204) -> encerra
-            processados += 1
-    print(f">> drenar encerrado. {processados} job(s) processado(s).", flush=True)
+        while total_s + total_v < max_jobs:
+            restante = max_jobs - (total_s + total_v)
+            fez_s = await _drenar_fila(client, _pollar_uma_vez, lote, restante)
+            total_s += fez_s
+            fez_v = 0
+            if verif_on:
+                restante = max_jobs - (total_s + total_v)
+                fez_v = await _drenar_fila(
+                    client, _pollar_verificacao_uma_vez, lote, restante)
+                total_v += fez_v
+            if fez_s == 0 and fez_v == 0:
+                break  # ambas as filas vazias
+    print(f">> drenar encerrado. {total_s} submit(s), {total_v} verificacao(oes).",
+          flush=True)
 
 
 def _instalar_sinais(laco):
