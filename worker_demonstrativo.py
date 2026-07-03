@@ -27,6 +27,7 @@ _MODO_CRON = os.environ.get("MODO", "").lower() == "cron"
 _ADAPTERS = {
     "sulamerica": "adapters.sulamerica",
     "sassepe": "adapters.sassepe",
+    "hapvida": "adapters.hapvida",
 }
 
 _parar = asyncio.Event()
