@@ -4,6 +4,7 @@
 **Para:** chat do orquestrador (bot WhatsApp HOP)
 **Responde:** "Handoff — Varredura sistemática de status de autorização (tabela unificada)" (2026-07-03)
 **Decisão tomada com o Pedro:** começar pela **Fase 1** (nível-guia).
+**Q1 resolvido (Pedro, 2026-07-03): Cenário A em 99% dos casos (default).** A autorização é atrelada ao prestador executante → a varredura-prestador IMAG **cobre** o universo agendável na IMAG. A premissa do gate se sustenta.
 
 ---
 
@@ -30,18 +31,13 @@ Baseado no que cada `coletar()` realmente raspa hoje (as três varreduras foram 
 | **saldo (qtd aut/util)** | ❌ | ❌ | ❌ |
 | senha | ❌ (drill-down) | ❌ | ❌ |
 
-### Q1 — Cobertura (o ponto que decide a premissa) — **precisa de resposta de negócio**
+### Q1 — Cobertura — **RESOLVIDO: Cenário A (default)**
 
-As três varreduras leem **apenas as guias que aparecem na conta do PRESTADOR IMAG** no portal — não "todas as autorizações do beneficiário no convênio".
+As três varreduras leem as guias da conta do **PRESTADOR IMAG**. Pedro confirmou: **em 99% dos casos a autorização é atrelada ao prestador executante (Cenário A)** — assumido como default.
 
-A pergunta decisiva: **a autorização desses convênios é emitida vinculada a um prestador executante específico, ou é genérica (o beneficiário escolhe onde usar)?**
+Consequência: para o paciente fazer o exame **na IMAG**, a guia aponta a IMAG como executante → **aparece na varredura**. A visão-prestador **cobre** o universo relevante (tudo agendável na IMAG), inclusive o caso "autorizei direto no app" (desde que autorizado para a IMAG). A premissa do gate se sustenta.
 
-- **Se vinculada ao prestador:** para o paciente fazer o exame **na IMAG**, a guia **precisa** apontar a IMAG como executante → ela **aparece** na nossa varredura. Nesse caso a visão-prestador **cobre** o universo relevante (tudo que é agendável na IMAG), e a premissa do gate se sustenta — inclusive o caso "autorizei direto no app", desde que tenha sido autorizado **para a IMAG**.
-- **Se genérica:** uma autorização que o paciente obteve sem indicar a IMAG **não aparece** na nossa conta → o confronto falha e esses casos **continuam indo ao HITL**.
-
-Ou seja: a varredura-prestador cobre exatamente **"autorizações executáveis na IMAG"**. Se o produto aceita que *só* faz sentido confrontar autorizações que já estão atreladas à IMAG (afinal, o agendamento é na IMAG), então **cobre**. Se o produto quer confrontar autorizações genéricas do beneficiário (que ele poderia depois direcionar à IMAG), **não cobre** — e não há como cobrir por varredura de prestador (precisaria de acesso à conta do BENEFICIÁRIO, que não temos).
-
-**→ Decisão necessária (Pedro/negócio):** o confronto é sobre "autorização já atrelada à IMAG" (cobrimos) ou "qualquer autorização do beneficiário" (não cobrimos)?
+**Ressalva do 1% (Cenário B):** autorizações genéricas que o beneficiário não direcionou à IMAG não aparecem → esses casos caem no comportamento seguro (HITL). Aceitável como cauda.
 
 ### Q2 — Frescor
 Varredura por **cron** (hoje diária; `cron_varredura.py`). Viável **intra-dia** (a cada poucas horas), **não** tempo-real: cada portal tem login lento (10–30s) + risco de WAF/rate-limit. ⚠️ O consumo **síncrono** (paciente no WhatsApp) **não pode** bater no portal ao vivo → **só a tabela materializada** serve, com limite de staleness + **fallback HITL** quando stale. Confirma a recomendação do handoff.
@@ -63,30 +59,35 @@ Varredura por **cron** (hoje diária; `cron_varredura.py`). Viável **intra-dia*
 ### Fase 1 — espelho NÍVEL-GUIA (escolhida; barata, ~pronta)
 Materializa o que as `coletar()` já raspam. Responde: *"existe guia aprovada para esse beneficiário nesse convênio (nesta data)?"*.
 
+**Relação com `fat_verificacao_senha` (já existe):** o SQL revelou a tabela da Camada 3 — `fat_verificacao_senha` {senha, numero_carteira, convenio_id, guia_id, autorizacao_id, status, resultado(jsonb), veredito, tentativas, ...} + o circuit breaker `fat_verificacao_cb`. Ela é **job-orientada** (senhas que NÓS verificamos, ligadas a guias que originamos) — **não** é o espelho universal. O espelho (`fat_autorizacao_status_portal`) é **tabela nova e mais ampla** (toda guia da conta-prestador, originada por nós ou não). **Na Fase 2, o mesmo drill-down alimenta as duas** (o `resultado` do `verificar` e as colunas de vigência/TUSS do espelho).
+
+**Convenções do HOP a seguir:** prefixo **`fat_`**; **`convenio_id` (uuid)** é a FK canônica — eu emito `convenio_slug` (o `NOME` do adapter) e o **HOP resolve slug→convenio_id** no upsert (via a tabela `convenios`). `paciente_cadastro_id` o HOP resolve por **cpf / numero_carteirinha_padrao / nome_normalizado** contra `pacientes_cadastro`.
+
 **Divisão de trabalho:**
 - **HOP/Lovable cria:**
-  1. Tabela `autorizacao_status_portal` (DDL proposta abaixo).
-  2. Edge function `receive-varredura-status` (HMAC, **espelho de `receive-autorizacao`**) que recebe as linhas da varredura e faz **upsert idempotente** (última leitura vence).
-  3. RPC de upsert (ex. `fn_status_portal_upsert(p_linhas jsonb)`).
+  1. Tabela `fat_autorizacao_status_portal` (DDL abaixo).
+  2. Edge function `receive-varredura-status` (HMAC, **espelho de `receive-autorizacao`**) — recebe as linhas, **resolve slug→convenio_id e cpf/carteira/nome→paciente_cadastro_id**, e faz **upsert idempotente** (última leitura vence).
+  3. RPC `fn_status_portal_upsert(p_linhas jsonb)`.
 - **VPS/eu faço:**
-  4. `cron_varredura.py` passa a **postar** as linhas de `coletar()` para `receive-varredura-status` (HMAC via `callback.py`, mesmo padrão). Nada de Postgres direto no VPS.
-  5. Normalização de status para o enum estável (`aprovada|negada|em_analise|expirada|nao_encontrada|desconhecido`).
+  4. `cron_varredura.py` passa a **postar** as linhas de `coletar()` para `receive-varredura-status` (HMAC via `callback.py`). Nada de Postgres direto no VPS.
+  5. Normalização de status → enum estável. Na **Fase 1** as varreduras entregam `aprovada` (AUTORIZADO) | `negada` (NEGADO) | `em_analise` | `desconhecido`. `expirada` e `nao_encontrada` só na **Fase 2** (dependem de validade/drill-down).
 
 **DDL proposta (HOP cria; ajuste nomes/tipos):**
 ```sql
-create table public.autorizacao_status_portal (
+create table public.fat_autorizacao_status_portal (
   id uuid primary key default gen_random_uuid(),
   org_id uuid not null,
-  convenio_slug text not null,            -- unimed_recife|sassepe|sulamerica
+  convenio_id uuid,                       -- resolvido pelo HOP a partir do slug
+  convenio_slug text not null,            -- unimed_recife|sassepe|sulamerica (o que o VPS emite)
   cpf text,                               -- Sassepe expõe; demais quando houver
   numero_carteira text,                   -- SulAmérica/Unimed quando houver
   paciente_nome text,                     -- fallback/auditoria (Unimed casa por nome)
-  paciente_cadastro_id uuid,              -- resolvido quando possível (FK pacientes_cadastro)
+  paciente_cadastro_id uuid,              -- HOP resolve p/ cpf|numero_carteirinha_padrao|nome_normalizado
   numero_guia text,                       -- protocolo/guia do portal
-  status_portal text not null,            -- enum normalizado
+  status_portal text not null,            -- aprovada|negada|em_analise|expirada|nao_encontrada|desconhecido
   status_raw text,                        -- literal do portal (auditoria)
   data_guia date,                         -- emissão/solicitação
-  -- Fase 2 (nulos na Fase 1; preenchidos no drill-down):
+  -- Fase 2 (nulos na Fase 1; preenchidos no drill-down = ação verificar):
   codigo_tuss text,
   modalidade text,
   validade_inicio date,
@@ -94,14 +95,14 @@ create table public.autorizacao_status_portal (
   quantidade_autorizada int,
   quantidade_utilizada int,
   senha text,
-  -- rastreabilidade (importa p/ auditoria/M&A):
+  -- rastreabilidade (auditoria/M&A):
   fonte text not null,                    -- adapter/portal
   capturado_em timestamptz not null default now(),
   raw_ref text                            -- ponteiro p/ payload bruto (não a tabela quente)
 );
 -- upsert idempotente nível-guia (Fase 2 refina a chave p/ incluir codigo_tuss):
-create unique index uq_status_portal_guia
-  on public.autorizacao_status_portal
+create unique index uq_fat_status_portal_guia
+  on public.fat_autorizacao_status_portal
   (org_id, convenio_slug, coalesce(numero_guia,''),
    coalesce(cpf,''), coalesce(numero_carteira,''));
 ```
