@@ -19,9 +19,11 @@ from . import config
 _ONEPASS_HOST = "onepass.mv.com.br"
 
 
-async def login(page):
+async def login(page, cred_user: str | None = None, cred_senha: str | None = None):
     """Autentica no Sassepe via MVOnePass e escolhe o workspace.
-    Falha alto se um passo essencial nao acontecer (nao silenciosa)."""
+    cred_user/cred_senha permitem um PERFIL distinto (ex.: usuario do demonstrativo != autorizacao);
+    default = credenciais de autorizacao (config.sassepe_user/pass). Falha alto se um passo essencial
+    nao acontecer (nao silenciosa)."""
     await page.goto(config.PORTAL_URL, wait_until="domcontentloaded")
     await page.wait_for_timeout(1500)
 
@@ -43,8 +45,8 @@ async def login(page):
     email = page.locator('input[type="text"]').first
     senha = page.locator('input[type="password"]').first
     await email.wait_for(state="visible", timeout=20000)
-    await email.fill(config.sassepe_user())
-    await senha.fill(config.sassepe_pass())
+    await email.fill(cred_user or config.sassepe_user())
+    await senha.fill(cred_senha or config.sassepe_pass())
     await page.wait_for_timeout(300)
     try:
         await page.get_by_role("button", name="Start session").click(timeout=15000)

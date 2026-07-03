@@ -1,0 +1,246 @@
+"""
+adapters/sulamerica/demonstrativos.py — Coleta do Demonstrativo de Análise de Conta (XML de retorno).
+
+Verbo NOVO do adapter (além de submit/coletar). REUSA o login/sessão da autorização
+(mesmo portal, mesmo prestador). Receita validada ao vivo (handoff Apêndice A, 2026-07-01):
+
+  1. navega à tela do Demonstrativo de Pagamento
+  2. fecha o popup de pesquisa NPS (Escape)
+  3. filtra o período (setar value + eventos jQuery; digitar char-a-char quebra) + #btnPesquisar
+  4. intercepta window.open (o clique no 'xml' abre uma URL PRÉ-ASSINADA do GCS)
+  5. clica o links[3] (xml de Análise de Conta Médica) de cada linha
+  6. baixa cada URL com httpx puro (assinada → SEM cookie), descompacta o .zip, extrai o .XML
+  7. valida (tipoTransacao=DEMONSTRATIVO_ANALISE_CONTA), hash, base64 → contrato de retorno
+
+SulAmérica guarda ~3 meses de histórico → coletar por mês fechado.
+"""
+import base64
+import hashlib
+import io
+import os
+import zipfile
+from datetime import datetime
+
+import httpx
+
+from .sessao import navegador, login
+
+_EVID_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "evidencias_demonstrativo")
+
+
+async def _achar_frame(page, seletor, tentativas=6, espera_ms=1500):
+    """Retorna o frame (ou a própria page) que contém o seletor. Portal SulAmérica é iframe-heavy."""
+    for _ in range(tentativas):
+        for fr in [page] + list(page.frames):
+            try:
+                if await fr.query_selector(seletor):
+                    return fr
+            except Exception:
+                continue
+        await page.wait_for_timeout(espera_ms)
+    return None
+
+
+# JS de diagnóstico: o que este contexto (frame) enxerga
+_DIAG = """
+() => {
+  const trs = Array.prototype.slice.call(document.querySelectorAll('tr'));
+  let comData = 0, comLinks = 0;
+  trs.forEach(function(tr){
+    if (/\\d{2}\\/\\d{2}\\/\\d{4}/.test(tr.textContent)) comData++;
+    const l = Array.prototype.slice.call(tr.querySelectorAll('a')).filter(function(a){
+      const t=(a.textContent||'').trim().toLowerCase(); return t==='pdf'||t==='xml'||t==='csv'; });
+    if (l.length) comLinks++;
+  });
+  return { trs: trs.length, comData: comData, comLinks: comLinks,
+    temDataInicial: !!document.getElementById('data-inicial'),
+    temBtn: !!document.getElementById('btnPesquisar') };
+}
+"""
+
+
+def _br(data_iso: str | None) -> str | None:
+    """yyyy-mm-dd → dd/mm/yyyy (formato do portal)."""
+    if not data_iso:
+        return None
+    try:
+        return datetime.strptime(data_iso[:10], "%Y-%m-%d").strftime("%d/%m/%Y")
+    except ValueError:
+        return None
+
+
+def _data_pagamento_do_nome(nome: str) -> str | None:
+    """DC_000043_20260610_100000014967_001.XML → 2026-06-10 (o 2º bloco AAAAMMDD)."""
+    partes = nome.split("_")
+    for p in partes:
+        if len(p) == 8 and p.isdigit():
+            try:
+                return datetime.strptime(p, "%Y%m%d").strftime("%Y-%m-%d")
+            except ValueError:
+                continue
+    return None
+
+
+# JS: window.open PASSTHROUGH — registra a URL E ainda abre (deixa a requisição ao GCS acontecer,
+# capturada também pelo listener de rede do Playwright, que é a via mais robusta).
+_HOOK_OPEN = """
+window.__urls = window.__urls || [];
+(function(){
+  var _o = window.open;
+  window.open = function(u){ try { window.__urls.push('' + u); } catch(e){} return _o.apply(window, arguments); };
+})();
+"""
+
+# JS: seta o período (value + eventos) e dispara a pesquisa.
+# Forma arrow recebendo o arg do Playwright (evaluate injeta 1 parâmetro, não `arguments`).
+_SET_PERIODO = """
+([ini, fim]) => {
+  function setv(id, v){ var e = document.getElementById(id); if(!e) return;
+    e.value = v; e.dispatchEvent(new Event('input', {bubbles:true}));
+    e.dispatchEvent(new Event('change', {bubbles:true})); }
+  setv('data-inicial', ini); setv('data-final', fim);
+  var b = document.getElementById('btnPesquisar'); if(b) b.click();
+}
+"""
+
+# JS: clica o link 'xml' de Análise de Conta Médica (links[3]) de cada linha com data + >=4 links
+# pdf|xml|csv (SEM filtro de td — a tabela tem muitas colunas). Retorna diagnóstico + cliques.
+# ordem por linha: [pdf, xml, pdf, xml, csv] → índice 3 = xml de Análise de Conta Médica.
+_CLICAR_XMLS = """
+() => {
+  const out = { cliques: 0, tds: [], hrefs: [] };
+  const trs = Array.prototype.slice.call(document.querySelectorAll('tr'));
+  trs.forEach(function(tr){
+    if (!/\\d{2}\\/\\d{2}\\/\\d{4}/.test(tr.textContent)) return;
+    const links = Array.prototype.slice.call(tr.querySelectorAll('a')).filter(function(a){
+      const t = (a.textContent || '').trim().toLowerCase();
+      return t === 'pdf' || t === 'xml' || t === 'csv';
+    });
+    if (links.length < 4) return;
+    out.tds.push(tr.querySelectorAll('td').length);
+    out.hrefs.push((links[3].getAttribute('href') || '').slice(0, 60));
+    try { links[3].click(); out.cliques++; } catch(e) {}
+  });
+  return out;
+}
+"""
+
+DEMO_URL = (
+    "https://saude.sulamericaseguros.com.br/prestador/servicos-medicos/"
+    "demonstrativos-tiss-3/demonstrativo-de-pagamento/"
+)
+
+
+async def coletar_demonstrativos(data_ini: str | None = None, data_fim: str | None = None) -> dict:
+    """Coleta os XML de Análise de Conta do período. Retorno estruturado (contrato da coleta)."""
+    evidencias: list[dict] = []
+    ini_br, fim_br = _br(data_ini), _br(data_fim)
+
+    async with navegador() as page:
+        try:
+            await login(page)
+        except Exception as e:
+            return {"status": "erro_coleta", "arquivos": [], "evidencias": evidencias,
+                    "mensagem": f"Falha no login: {e}"}
+
+        os.makedirs(_EVID_DIR, exist_ok=True)
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+        await page.goto(DEMO_URL, wait_until="domcontentloaded")
+        await page.wait_for_timeout(3000)
+        # fecha o popup NPS (best-effort; 2x Escape + clique fora)
+        for _ in range(2):
+            try:
+                await page.keyboard.press("Escape")
+                await page.wait_for_timeout(400)
+            except Exception:
+                pass
+
+        # o conteúdo do demonstrativo pode estar num iframe → acha o frame com os campos
+        ctx = await _achar_frame(page, "#data-inicial, #btnPesquisar")
+        if ctx is None:
+            ctx = page  # fallback: frame principal
+        num_frames = len(list(page.frames))
+
+        # captura de URL por rede/popup/download (via Playwright) — robusto contra jQuery/window.open
+        capturas_net: list[str] = []
+
+        def _cap(u: str | None):
+            if u and ("storage.googleapis.com" in u or u.lower().split("?")[0].endswith(".zip")):
+                capturas_net.append(u)
+
+        page.on("request", lambda req: _cap(req.url))
+        page.on("download", lambda d: _cap(d.url))
+        page.context.on("page", lambda p: _cap(p.url))
+
+        await ctx.evaluate(_HOOK_OPEN)
+        if ini_br and fim_br:
+            await ctx.evaluate(_SET_PERIODO, [ini_br, fim_br])
+            await page.wait_for_timeout(6000)  # portal TISS é lento; tabela via AJAX
+
+        diag = {}
+        try:
+            diag = await ctx.evaluate(_DIAG)
+        except Exception as e:
+            diag = {"erro_diag": str(e)}
+
+        shot = os.path.join(_EVID_DIR, f"{ts}_demonstrativo.png")
+        try:
+            await page.screenshot(path=shot, full_page=True)
+        except Exception:
+            shot = None
+        print(f"[diag] frames={num_frames} ctx_is_page={ctx is page} diag={diag} shot={shot}", flush=True)
+        evidencias.append({"etapa": "pesquisa", "diag": diag, "screenshot": shot, "frames": num_frames})
+
+        try:
+            clic = await ctx.evaluate(_CLICAR_XMLS)
+        except Exception as e:
+            return {"status": "erro_coleta", "arquivos": [], "evidencias": evidencias,
+                    "mensagem": f"Falha ao localizar/clicar os XML: {e}"}
+        await page.wait_for_timeout(5000)  # deixa os window.open/requisições GCS acontecerem
+        capturadas: list[str] = await ctx.evaluate("window.__urls || []")
+        print(f"[clicar] {clic} | net={len(capturas_net)} janela={len(capturadas)}", flush=True)
+        evidencias.append({"etapa": "clicar", **clic, "net": len(capturas_net)})
+
+        # URLs de todas as vias: rede (GCS) + window.open + href direto
+        diretas = [h for h in clic.get("hrefs", []) if str(h).lower().startswith("http")]
+        todas = list(capturas_net) + list(capturadas) + diretas
+        urls = [u for u in todas if u and ".zip" in u.lower()]
+        urls = list(dict.fromkeys(urls))  # dedup preservando ordem
+
+        if not urls:
+            return {"status": "sem_novidade", "arquivos": [], "evidencias": evidencias,
+                    "mensagem": (f"Nenhum XML no período. cliques={clic.get('cliques')}, net={len(capturas_net)}, "
+                                 f"janela={len(capturadas)}, tds={clic.get('tds')}, diag={diag}. Screenshot: {shot}")}
+
+        # baixa as URLs assinadas (SEM cookies), descompacta, extrai o XML
+        arquivos: list[dict] = []
+        async with httpx.AsyncClient(timeout=90, follow_redirects=True) as cli:
+            for u in urls:
+                try:
+                    r = await cli.get(u)
+                    r.raise_for_status()
+                    zf = zipfile.ZipFile(io.BytesIO(r.content))
+                    nome_xml = next((n for n in zf.namelist() if n.upper().endswith(".XML")), None)
+                    if not nome_xml:
+                        continue
+                    conteudo = zf.read(nome_xml)  # bytes ISO-8859-1
+                    # valida: é um demonstrativo de análise de conta?
+                    texto = conteudo.decode("iso-8859-1", errors="ignore")
+                    if "DEMONSTRATIVO_ANALISE_CONTA" not in texto:
+                        continue
+                    arquivos.append({
+                        "nome": nome_xml.split("/")[-1],
+                        "xml_base64": base64.b64encode(conteudo).decode("ascii"),
+                        "sha256": hashlib.sha256(conteudo).hexdigest(),
+                        "data_pagamento": _data_pagamento_do_nome(nome_xml),
+                    })
+                except Exception as e:
+                    evidencias.append({"etapa": "download", "erro": str(e), "url": u[:120]})
+
+        if not arquivos:
+            return {"status": "erro_coleta", "arquivos": [], "evidencias": evidencias,
+                    "mensagem": "URLs capturadas mas nenhum XML de análise de conta válido extraído."}
+
+        return {"status": "coletado", "arquivos": arquivos, "evidencias": evidencias,
+                "mensagem": f"{len(arquivos)} demonstrativo(s) coletado(s)."}

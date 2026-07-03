@@ -20,16 +20,19 @@ def _assinar(corpo: bytes) -> str:
     return hmac.new(segredo, corpo, hashlib.sha256).hexdigest()
 
 
-async def enviar(payload: dict) -> dict:
-    """Posta o payload (submit_result ou sweep_result) para o HOP.
-    Retorna {"ok": bool, "status_code": int, "body": str}."""
+async def enviar_para(url: str, payload: dict, timeout: int = 60) -> dict:
+    """Posta o payload assinado (HMAC) para uma Edge Function do HOP.
+    O corpo é assinado exatamente como enviado (bytes crus) — a Edge valida sobre o corpo cru."""
     corpo = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-    assinatura = _assinar(corpo)
     headers = {
         "Content-Type": "application/json",
-        "X-HOP-Signature": f"sha256={assinatura}",
+        "X-HOP-Signature": f"sha256={_assinar(corpo)}",
     }
-    async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.post(config.callback_url(), content=corpo, headers=headers)
-        return {"ok": resp.is_success, "status_code": resp.status_code,
-                "body": resp.text}
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        resp = await client.post(url, content=corpo, headers=headers)
+        return {"ok": resp.is_success, "status_code": resp.status_code, "body": resp.text}
+
+
+async def enviar(payload: dict) -> dict:
+    """Posta o resultado de autorização (submit_result/sweep_result) p/ receive-autorizacao."""
+    return await enviar_para(config.callback_url(), payload, timeout=30)
