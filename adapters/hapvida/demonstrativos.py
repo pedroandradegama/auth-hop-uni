@@ -86,7 +86,7 @@ async def coletar_demonstrativos(data_ini=None, data_fim=None) -> dict:
             # Buscar: botão de lupa (mais à direita da linha de filtros); fallback Enter
             clicou = await page.evaluate(
                 """()=>{const bs=[...document.querySelectorAll('button')].filter(function(e){const b=e.getBoundingClientRect();
-                    return b.y>150&&b.y<300&&b.width>20&&b.width<80&&b.querySelector('svg');});
+                    return b.y>150&&b.y<300&&b.width>20&&b.width<80&&e.querySelector('svg');});
                     bs.sort((a,b)=>b.getBoundingClientRect().x-a.getBoundingClientRect().x);
                     if(bs[0]){bs[0].click();return true;}return false;}"""
             )
