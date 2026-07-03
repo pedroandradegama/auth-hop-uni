@@ -105,8 +105,6 @@ async def coletar_demonstrativos(data_ini=None, data_fim=None) -> dict:
             except Exception: shot = None
             return {"status": "sem_novidade", "arquivos": [], "evidencias": evidencias,
                     "mensagem": f"Nenhum lote Concluído em {mes_ano}. Screenshot: {shot}"}
-        nossos = {a["processo"] for a in alvos if a.get("processo")}
-
         # dispara "Gerar XML" de cada lote (geração assíncrona)
         for a in alvos:
             try:
@@ -124,7 +122,8 @@ async def coletar_demonstrativos(data_ini=None, data_fim=None) -> dict:
         await page.goto(MEDICAL_URL, wait_until="domcontentloaded")
         await page.wait_for_timeout(2500)
         arquivos = []
-        baixados = set()
+        vistos = set()  # fileNames já capturados (dedup — o processo vem null da UI)
+        alvo_n = len(alvos)
         for tentativa in range(8):
             try:
                 await page.get_by_text("Alerta", exact=False).first.click(timeout=8000)
@@ -132,28 +131,28 @@ async def coletar_demonstrativos(data_ini=None, data_fim=None) -> dict:
                 pass
             await page.wait_for_timeout(2000)
             downloads = await page.evaluate(_LER_DOWNLOADS)
-            pend = [x for x in downloads if x.get("processo") in nossos and x["processo"] not in baixados]
-            print(f"[hapvida] tentativa={tentativa} downloads={downloads} pend={len(pend)}", flush=True)
-            for dl in pend:
+            print(f"[hapvida] tentativa={tentativa} downloads={len(downloads)} capturados={len(arquivos)}", flush=True)
+            # clica cada (Download) de Demonstrativo Pagamento Concluído; dedup pelo fileName da resposta
+            for dl in downloads:
                 try:
                     async with page.expect_response(lambda r: _DL_MARK in r.url, timeout=30000) as ri:
                         await page.mouse.click(dl["x"], dl["y"])
                     resp = await ri.value
-                    body = await resp.body()
-                    fn = (re.search(r"fileName=([^&]+)", resp.url) or [None, f"DemonstrativoPagamento-{dl['processo']}-0.xml"])[1]
-                    texto = body.decode("iso-8859-1", errors="ignore")
-                    if "DEMONSTRATIVO_ANALISE_CONTA" not in texto:
-                        evidencias.append({"etapa": "download", "processo": dl["processo"], "erro": "não é DEMONSTRATIVO_ANALISE_CONTA"})
+                    fn = (re.search(r"fileName=([^&]+)", resp.url) or [None, None])[1] or f"hapvida_{len(arquivos)}.xml"
+                    if fn in vistos:
                         continue
+                    body = await resp.body()
+                    if "DEMONSTRATIVO_ANALISE_CONTA" not in body.decode("iso-8859-1", errors="ignore"):
+                        continue
+                    vistos.add(fn)
                     arquivos.append({
                         "nome": fn, "xml_base64": base64.b64encode(body).decode("ascii"),
                         "sha256": hashlib.sha256(body).hexdigest(), "data_pagamento": None,
                     })
-                    baixados.add(dl["processo"])
                 except Exception as e:
-                    evidencias.append({"etapa": "download", "processo": dl["processo"], "erro": str(e)})
+                    evidencias.append({"etapa": "download", "erro": str(e)})
                 await page.wait_for_timeout(500)
-            if len(baixados) >= len(nossos):
+            if len(arquivos) >= alvo_n:
                 break
             await page.wait_for_timeout(4000)  # espera mais gerações concluírem
 
@@ -162,8 +161,8 @@ async def coletar_demonstrativos(data_ini=None, data_fim=None) -> dict:
             try: await page.screenshot(path=shot, full_page=True)
             except Exception: shot = None
             return {"status": "erro_coleta", "arquivos": [], "evidencias": evidencias,
-                    "mensagem": f"Gerou mas não capturou XML no sino ({len(nossos)} lote(s)). Screenshot: {shot}"}
+                    "mensagem": f"Gerou mas não capturou XML no sino ({alvo_n} lote(s)). Screenshot: {shot}"}
 
         return {"status": "coletado", "competencia": mes_ano, "arquivos": arquivos,
                 "evidencias": evidencias,
-                "mensagem": f"{len(arquivos)}/{len(nossos)} demonstrativo(s) coletado(s) de {mes_ano}."}
+                "mensagem": f"{len(arquivos)}/{alvo_n} demonstrativo(s) coletado(s) de {mes_ano}."}
