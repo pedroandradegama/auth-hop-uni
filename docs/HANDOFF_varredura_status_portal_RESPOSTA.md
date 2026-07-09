@@ -63,14 +63,20 @@ Materializa o que as `coletar()` já raspam. Responde: *"existe guia aprovada pa
 
 **Convenções do HOP a seguir:** prefixo **`fat_`**; **`convenio_id` (uuid)** é a FK canônica — eu emito `convenio_slug` (o `NOME` do adapter) e o **HOP resolve slug→convenio_id** no upsert (via a tabela `convenios`). `paciente_cadastro_id` o HOP resolve por **cpf / numero_carteirinha_padrao / nome_normalizado** contra `pacientes_cadastro`.
 
-**Divisão de trabalho:**
-- **HOP/Lovable cria:**
-  1. Tabela `fat_autorizacao_status_portal` (DDL abaixo).
-  2. Edge function `receive-varredura-status` (HMAC, **espelho de `receive-autorizacao`**) — recebe as linhas, **resolve slug→convenio_id e cpf/carteira/nome→paciente_cadastro_id**, e faz **upsert idempotente** (última leitura vence).
-  3. RPC `fn_status_portal_upsert(p_linhas jsonb)`.
-- **VPS/eu faço:**
-  4. `cron_varredura.py` passa a **postar** as linhas de `coletar()` para `receive-varredura-status` (HMAC via `callback.py`). Nada de Postgres direto no VPS.
-  5. Normalização de status → enum estável. Na **Fase 1** as varreduras entregam `aprovada` (AUTORIZADO) | `negada` (NEGADO) | `em_analise` | `desconhecido`. `expirada` e `nao_encontrada` só na **Fase 2** (dependem de validade/drill-down).
+**⚡ Simplificação — o VPS JÁ ENTREGA os dados.** O `cron_varredura.py` (já roda, diário) chama `coletar()` de cada convênio e **já posta** o resultado ao HOP como `sweep_result` no `receive-autorizacao`:
+```json
+{ "tipo": "sweep_result", "convenio": "<slug>", "janela_dias": 15,
+  "guias": [ { "numero_protocolo","status_portal","status_raw",
+               "cpf"|"carteirinha","paciente","data","senha":null,"ts" }, ... ] }
+```
+Toda guia raspada **já chega ao HOP**. A Fase 1 **não precisa de mudança no VPS** — só o HOP **materializar** o espelho a partir do `sweep_result` que já recebe.
+
+**Divisão de trabalho (Fase 1 = HOP-only):**
+- **HOP/Lovable faz:**
+  1. Cria a tabela `fat_autorizacao_status_portal` (DDL abaixo).
+  2. No handler do `sweep_result` (dentro do `receive-autorizacao`), para cada item de `guias[]`: **resolve slug→convenio_id e cpf/carteira/nome→paciente_cadastro_id**, **normaliza status**, e faz **upsert idempotente** via RPC `fn_status_portal_upsert(p_linhas jsonb)`.
+- **VPS/eu:** nada obrigatório na Fase 1 (dados já vão). Se o HOP quiser campos extras, enriqueço o `sweep_result`.
+- **Normalização de status** (o VPS já entrega `status_portal` do adapter): `AUTORIZADO→aprovada`, `NEGADO→negada`, `EM_ANALISE→em_analise`, `DESCONHECIDO→desconhecido`. `expirada`/`nao_encontrada` só na **Fase 2** (dependem de validade/drill-down).
 
 **DDL proposta (HOP cria; ajuste nomes/tipos):**
 ```sql
