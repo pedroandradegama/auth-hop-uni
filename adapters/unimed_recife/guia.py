@@ -158,7 +158,8 @@ async def baixar_guia_por_senha(page, senha: str) -> dict | None:
     r = await page.request.get(lista_url)
     if not r.ok:
         return None
-    html = await r.text()
+    # o portal é ISO-8859-1; r.text() tenta UTF-8 e quebra em 'ç' (0xe7).
+    html = (await r.body()).decode("latin-1", errors="ignore")
     # "Impressão de Guia" = anexo .pdf via MostrarPopoupPrestador(<cod>,<nome>,<prot>,..)
     m = re.search(r"MostrarPopoupPrestador\('([^']+)','([^']+\.pdf)','([^']+)'",
                   html, re.I)
