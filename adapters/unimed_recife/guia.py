@@ -120,9 +120,9 @@ async def _args_acompanhar_por_senha(page, senha: str):
         await page.fill('input[name="senha"]', str(senha).strip())
     except Exception:
         return None
-    await page.click('input[name="buscar"]')
-    await page.wait_for_load_state("domcontentloaded")
-    await page.wait_for_timeout(2500)
+    # dispatch_event evita o hang do page.click (ver verificar.py).
+    await page.dispatch_event('input[name="buscar"]', "click")
+    await page.wait_for_timeout(3000)
     return await page.evaluate(
         r"""() => {
           const el = Array.from(document.querySelectorAll('img,a'))
