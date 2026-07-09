@@ -151,16 +151,22 @@ async def _fluxo(page, senha: str, numero_carteira: str | None) -> dict:
 
     itens = []
     qtd_aut_total = 0
+    vistos = set()
     for row in itens_raw:
+        # linha de item REAL: as duas últimas células são quantidades numéricas.
+        # (descarta cabeçalho, "Aguarde...", e linhas concatenadas do painel.)
+        if len(row) < 4:
+            continue
+        qsol, qaut = row[-2].strip(), row[-1].strip()
+        if not (qsol.isdigit() and qaut.isdigit()):
+            continue
         info = _parse_item(row[0])
-        qsol = row[2] if len(row) > 2 else None
-        qaut = row[3] if len(row) > 3 else None
-        try:
-            if qaut is not None:
-                qtd_aut_total += int(re.sub(r"\D", "", qaut) or 0)
-        except Exception:
-            pass
-        itens.append({**info, "status": row[1] if len(row) > 1 else None,
+        cod = info.get("codigo_tuss")
+        if not cod or cod in vistos:
+            continue
+        vistos.add(cod)
+        qtd_aut_total += int(qaut)
+        itens.append({**info, "status": row[-3].strip() if len(row) >= 3 else None,
                       "qtd_solicitada": qsol, "qtd_autorizada": qaut})
 
     if not status:

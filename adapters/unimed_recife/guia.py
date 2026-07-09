@@ -19,8 +19,10 @@ O download tem que passar pelo VIEWER `mudareditorimagem.php`, de dentro da
 sessão logada — usar `page.request.get` (carrega os cookies do contexto).
 """
 import base64
+import contextlib
 import io
 import re
+from datetime import datetime, timedelta
 
 BASE = "https://autorizador.unimedrecife.com.br/"
 _ACOMPANHAR = (BASE + "usuario.php?id=MzY=&ativa=MA==&area=Mw=="
@@ -117,11 +119,19 @@ async def _args_acompanhar_por_senha(page, senha: str):
     await page.goto(_ACOMPANHAR, wait_until="domcontentloaded")
     await page.wait_for_timeout(1500)
     try:
+        # senha + PERÍODO amplo (a busca por senha sozinha volta vazia).
+        hoje = datetime.now()
+        ini = (hoje - timedelta(days=180)).strftime("%d/%m/%Y")
+        fim = hoje.strftime("%d/%m/%Y")
         await page.fill('input[name="senha"]', str(senha).strip())
+        for nome, val in (("data1", ini), ("data2", fim)):
+            with contextlib.suppress(Exception):
+                await page.fill(f'input[name="{nome}"]', val)
     except Exception:
         return None
     # dispatch_event evita o hang do page.click (ver verificar.py).
     await page.dispatch_event('input[name="buscar"]', "click")
+    await page.wait_for_load_state("domcontentloaded")
     await page.wait_for_timeout(3000)
     return await page.evaluate(
         r"""() => {
