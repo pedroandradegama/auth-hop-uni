@@ -89,8 +89,11 @@ def _parse_item(item_str: str):
     m = re.search(r"Item\s*-\s*(\d+)\s*-\s*([A-Za-z]+)\s*-\s*(.+)$", item_str or "")
     if not m:
         return {"codigo_tuss": None, "modalidade": None, "descricao": item_str}
+    # corta cauda que às vezes gruda ("... Autorizado 1 1").
+    descr = re.split(r"\s+(?:Autorizad|Negad|Em an[aá]lis|Cancelad)\w*\b",
+                     m.group(3).strip())[0].strip()
     return {"codigo_tuss": m.group(1), "modalidade": m.group(2).upper(),
-            "descricao": m.group(3).strip()}
+            "descricao": descr}
 
 
 async def _evidencia_b64(page) -> str | None:
