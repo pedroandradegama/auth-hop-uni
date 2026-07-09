@@ -121,7 +121,9 @@ async def _fluxo(page, senha: str, numero_carteira: str | None) -> dict:
         return _erro("estrutural", "campo de senha (input[name=numero]) ausente")
 
     await campo.fill(str(senha).strip())
-    await page.click('input[name="buscar"]')
+    # dispatch_event: dispara o onclick (ValidaAutorizacao) SEM esperar o
+    # "settle" do Playwright — page.click() trava aqui (AJAX/navegação/dialog).
+    await page.dispatch_event('input[name="buscar"]', "click")
 
     # Espera o painel popular: ou "Senha Inválida" ou uma linha de Item.
     try:
