@@ -1,3 +1,4 @@
 playwright
 httpx
 pydantic
+pypdf>=4.0

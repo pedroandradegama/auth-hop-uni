@@ -30,6 +30,7 @@ import re
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 from . import sessao
+from . import guia as guia_mod
 
 VALIDAR_TIMEOUT_S = 90        # timeout interno da ação (spec)
 _MAX_EVID_B64 = 300 * 1024    # limite do evidencia_b64
@@ -168,9 +169,9 @@ async def _fluxo(page, senha: str, numero_carteira: str | None) -> dict:
                 "detalhe": f"status_portal desconhecido: {status_txt!r}",
                 "itens": itens}
 
-    return {
+    resultado = {
         "status_portal": status,
-        "validade": None,                     # Unimed não expõe validade nesta tela
+        "validade": None,                     # CONSULTAR não expõe validade...
         "qtd_autorizada": qtd_aut_total or None,
         "classe_erro": None,
         "evidencia_b64": evid,
@@ -178,6 +179,20 @@ async def _fluxo(page, senha: str, numero_carteira: str | None) -> dict:
                    f"guia_prestador: {pares.get('Guia Prestador')}; {len(itens)} item(ns)",
         "itens": itens,                       # bônus p/ Fase 2 (TUSS/modalidade/qtd)
     }
+
+    # v1.1: a VALIDADE (e a guia PDF p/ anexar + auto-preencher) vem da GUIA.
+    # Só p/ autorizada; degrada com segurança (mantém validade=null se falhar).
+    if status == "autorizada":
+        try:
+            g = await guia_mod.baixar_guia_por_senha(page, senha)
+            if g:
+                campos = g.get("campos") or {}
+                resultado["validade"] = campos.get("validade_senha")
+                resultado["guia_pdf_b64"] = g.get("pdf_b64")   # HOP anexa/persiste
+                resultado["guia_campos"] = campos              # HOP auto-preenche
+        except Exception as e:
+            resultado["detalhe"] += f"; guia não obtida: {e}"
+    return resultado
 
 
 async def verificar(senha: str, numero_carteira: str | None = None) -> dict:
