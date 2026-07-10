@@ -6,6 +6,7 @@ venv/
 .venv/
 __pycache__/
 *.pyc
+.pytest_cache/
 
 # Saidas de runtime
 Solicitacoes/

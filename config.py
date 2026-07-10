@@ -84,6 +84,23 @@ def verificacao_habilitada() -> bool:
 VERIFICACAO_LOTE = int(os.environ.get("VERIFICACAO_LOTE", "5"))
 
 
+# ── Agente híbrido de fallback (Costuras A/B/C) ──────────────────────────
+def _env_bool(nome: str, padrao: bool = False) -> bool:
+    return os.environ.get(nome, "true" if padrao else "false").lower() == "true"
+
+
+def agente_habilitado() -> bool:
+    """Liga o loop de agente quando o determinístico lança FalhaDeterministica
+    com motivo agent-elegível. OFF por padrão."""
+    return _env_bool("AGENTE_HABILITADO", False)
+
+
+def agente_submeter_habilitado() -> bool:
+    """F0: False. O agente diagnostica e escala, nunca submete. Só vira True
+    após validação do Pedro na vw_rpa_agente_diario (F1)."""
+    return _env_bool("AGENTE_SUBMETER_HABILITADO", False)
+
+
 # Intervalo do poll: rapido apos processar (pode haver fila), lento quando ocioso.
 POLL_INTERVAL_SEG = int(os.environ.get("POLL_INTERVAL_SEG", "15"))
 POLL_INTERVAL_OCIOSO_SEG = int(os.environ.get("POLL_INTERVAL_OCIOSO_SEG", "60"))
