@@ -179,6 +179,16 @@ async def _processar(job: JobPreAutorizacao):
         except Exception:
             import traceback
             print("[callback-falhou]", traceback.format_exc(), flush=True)
+
+        # Costura C: telemetria do agente (best-effort; nunca derruba o circuito).
+        if res_agente is not None:
+            try:
+                trace = res_agente.para_agent_trace(
+                    org_id=job.org_id, convenio=job.convenio)
+                await callback.enviar_agent_trace(trace)
+            except Exception:
+                import traceback
+                print("[agent-trace-falhou]", traceback.format_exc(), flush=True)
     finally:
         shutil.rmtree(pasta, ignore_errors=True)
 

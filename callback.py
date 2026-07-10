@@ -45,3 +45,10 @@ async def enviar_verificacao(payload: dict) -> dict:
     """Posta o resultado de verificacao de senha (Camada 3) p/ receive-verificacao.
     Mesmo HMAC (HOP_CALLBACK_SECRET); corpo `{job_id, resultado}`."""
     return await _enviar_para(config.callback_verificacao_url(), payload)
+
+
+async def enviar_agent_trace(payload: dict) -> dict:
+    """Telemetria do loop de agente (tipo=agent_trace) p/ receive-autorizacao.
+    MESMO endpoint e MESMO HMAC do submit_result. Best-effort: o chamador
+    engole excecao (telemetria nunca derruba o circuito principal)."""
+    return await _enviar_para(config.callback_url(), payload)
