@@ -20,6 +20,7 @@ from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 import config
 import codigos as codigos_mod
 from . import sessao, varredura
+from agente import FalhaDeterministica, MotivoFalha
 
 
 class SubmitAbortado(Exception):
@@ -155,9 +156,13 @@ async def executar(job: dict) -> dict:
                 await page.wait_for_selector('#emailprestador', timeout=8000)
             except PlaywrightTimeoutError:
                 await _snap(page, "erro_carteirinha", evidencias)
-                raise SubmitAbortado(
-                    f"Beneficiario nao encontrado para a carteirinha "
-                    f"'{job['carteirinha']}'."
+                raise FalhaDeterministica(
+                    motivo=MotivoFalha.VALIDACAO_PORTAL,
+                    etapa="buscar_beneficiario",
+                    detalhe=(f"Beneficiario nao encontrado para a carteirinha "
+                             f"'{job['carteirinha']}' (ou layout mudou)."),
+                    seletor="#emailprestador",
+                    url=page.url,
                 )
 
             # 5. Dados fixos do prestador
@@ -187,9 +192,13 @@ async def executar(job: dict) -> dict:
                 )
                 if not ok:
                     await _snap(page, "erro_codigo", evidencias)
-                    raise SubmitAbortado(
-                        f"Codigo nao adicionado: {erro} "
-                        "(gravar abortado para nao gerar guia parcial)."
+                    raise FalhaDeterministica(
+                        motivo=MotivoFalha.SELETOR_NAO_ACHADO,
+                        etapa="adicionar_procedimento",
+                        detalhe=(f"Codigo nao adicionado: {erro} "
+                                 "(gravar abortado para nao gerar guia parcial)."),
+                        seletor='td[onclick*="filleprocedimento"]',
+                        url=page.url,
                     )
 
             # 11-12. Ja executado + data
@@ -232,9 +241,13 @@ async def executar(job: dict) -> dict:
                     await page.wait_for_timeout(3000)
                 except Exception as e:
                     await _snap(page, "erro_anexo", evidencias)
-                    raise SubmitAbortado(
-                        f"Falha ao anexar '{os.path.basename(arquivo)}': {e} "
-                        "(gravar abortado para nao gravar sem pedido medico)."
+                    raise FalhaDeterministica(
+                        motivo=MotivoFalha.SELETOR_NAO_ACHADO,
+                        etapa="anexar_pedido",
+                        detalhe=(f"Falha ao anexar '{os.path.basename(arquivo)}': {e} "
+                                 "(gravar abortado para nao gravar sem pedido medico)."),
+                        seletor="#box1",
+                        url=page.url,
                     )
 
             # 14. Localidade (opcional — depende do tipo de carteirinha)
@@ -294,6 +307,8 @@ async def executar(job: dict) -> dict:
                             "lista. Capturar manualmente pelo screenshot pos_gravar.",
             }
 
+    except FalhaDeterministica:
+        raise  # Costura A: o runner (worker) decide se aciona o agente.
     except SubmitAbortado as e:
         return {"status": "erro_submit", "numero_protocolo": None,
                 "evidencias": evidencias, "mensagem": str(e)}
