@@ -28,6 +28,8 @@ import httpx
 import config
 import callback
 from schemas import JobPreAutorizacao
+from agente import (AgenteFallback, MOTIVOS_AGENTE, ContextoSeguranca,
+                    FalhaDeterministica, ResultadoAgente, ResultadoStatus)
 import importlib
 
 # Registro EXPLICITO convenio -> modulo do adapter (lista branca; nao importar
@@ -74,11 +76,56 @@ async def _baixar_anexos(anexos, pasta: str) -> list[str]:
     return caminhos
 
 
+def _mapear_resultado_agente(res: "ResultadoAgente") -> dict:
+    """Traduz ResultadoAgente -> dict submit_result (contrato inalterado).
+    CONCLUIDO -> protocolado; REQUER_HUMANO/RESULTADO_INCERTO -> requer_humano
+    com requer_captura_manual (NUNCA re-enfileira; risco de guia dupla)."""
+    if res.status == ResultadoStatus.CONCLUIDO:
+        return {"status": "protocolado", "numero_protocolo": res.protocolo,
+                "evidencias": [],
+                "mensagem": res.diagnostico or "Concluido pelo agente."}
+    # REQUER_HUMANO e RESULTADO_INCERTO: escala, sem re-fila.
+    return {"status": "requer_humano", "numero_protocolo": None,
+            "requer_captura_manual": True, "evidencias": [],
+            "mensagem": res.diagnostico or "Escalado pelo agente."}
+
+
+async def _rodar_agente(job: JobPreAutorizacao, dados: dict,
+                        falha: FalhaDeterministica,
+                        caminhos: list[str]) -> tuple[dict, "ResultadoAgente"]:
+    """§6.1a: page própria fresh. O agente re-loga e retoma pelo snapshot.
+    Retorna (dict submit_result, ResultadoAgente) — o segundo p/ Costura C."""
+    adapter = _carregar_adapter(job.convenio)
+    job_agente = {
+        "job_id": job.job_id, "convenio": job.convenio,
+        "carteirinha": job.carteirinha, "cpf": job.cpf,
+        "medico": job.medico, "paciente_nome": job.paciente_nome,
+        "codigos": dados["codigos"],
+        "anexos": [{"nome": os.path.basename(p), "path": p} for p in caminhos],
+    }
+    ctx = ContextoSeguranca(
+        dominio_portal=adapter.DOMINIO,
+        anexos_permitidos={os.path.basename(p): p for p in caminhos},
+        submeter_habilitado=config.agente_submeter_habilitado(),  # F0: False
+    )
+    agente = AgenteFallback(
+        buscar_guia_existente=None,   # F0: submit off; gate de guia não exercido (Q1 -> F1)
+        extrair_protocolo=None,       # F0 (Q2 -> F1)
+    )
+    async with adapter.sessao.navegador() as page:
+        await adapter.sessao.login(page)
+        res = await agente.executar(job_agente, page, falha, ctx)
+    print(f"[agente] job {job.job_id} -> {res.status.value} "
+          f"({res.passos_executados} passos, ${res.custo.custo_usd:.4f})", flush=True)
+    return _mapear_resultado_agente(res), res
+
+
 async def _processar(job: JobPreAutorizacao):
     """Baixa anexos, executa o submit, posta o callback, limpa."""
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     pasta = os.path.join(config.UPLOADS_DIR, f"{ts}_{job.job_id[:8]}")
     os.makedirs(pasta, exist_ok=True)
+    res_agente = None  # preenchido só quando o agente roda (Costura C)
     try:
         try:
             caminhos = await _baixar_anexos(job.anexos, pasta)
@@ -97,6 +144,24 @@ async def _processar(job: JobPreAutorizacao):
             try:
                 adapter = _carregar_adapter(job.convenio)
                 resultado = await adapter.submit(dados)
+            except FalhaDeterministica as falha:
+                if config.agente_habilitado() and falha.motivo in MOTIVOS_AGENTE:
+                    try:
+                        resultado, res_agente = await _rodar_agente(
+                            job, dados, falha, caminhos)
+                    except Exception as e:
+                        import traceback
+                        print("[agente-falhou]", traceback.format_exc(), flush=True)
+                        resultado = {"status": "requer_humano",
+                                     "numero_protocolo": None,
+                                     "requer_captura_manual": True, "evidencias": [],
+                                     "mensagem": f"Falha determ.: {falha}; "
+                                                 f"agente abortou: {e}"}
+                else:
+                    resultado = {"status": "erro_submit", "numero_protocolo": None,
+                                 "evidencias": [],
+                                 "mensagem": f"Falha deterministica "
+                                             f"({falha.motivo.value}): {falha}"}
             except Exception as e:
                 resultado = {"status": "erro_submit", "numero_protocolo": None,
                              "evidencias": [], "mensagem": f"Falha no worker: {e}"}
