@@ -34,6 +34,7 @@ from . import config, codigos as codigos_mod
 from . import sessao
 from . import _ui
 from . import varredura
+from agente import FalhaDeterministica, MotivoFalha
 
 
 class SubmitAbortado(Exception):
@@ -478,9 +479,18 @@ async def executar(job: dict) -> dict:
             # Tela de resumo (/confirmar-dados) -> Enviar (irreversivel) + protocolo.
             return await _enviar_solicitacao(page, cpf, evidencias)
 
+    except FalhaDeterministica:
+        raise  # ja classificado por um passo interno (defesa; hoje nao ocorre)
     except SubmitAbortado as e:
-        return {"status": "erro_submit", "numero_protocolo": None,
-                "evidencias": evidencias, "mensagem": str(e)}
+        # Costura A: pre-flight em memoria ja retornou erro_submit ANTES de abrir
+        # o browser, entao todo SubmitAbortado que chega aqui e' in-portal
+        # (layout/estado do portal) -> caso de agente. Cliques por coordenada nao
+        # tem seletor CSS estavel; o detalhe carrega qual passo falhou.
+        raise FalhaDeterministica(
+            motivo=MotivoFalha.ESTADO_INESPERADO,
+            etapa="submit_sassepe",
+            detalhe=str(e),
+        )
     except PlaywrightTimeoutError as e:
         return {"status": "erro_submit", "numero_protocolo": None,
                 "evidencias": evidencias, "mensagem": f"Tempo excedido: {e}"}
