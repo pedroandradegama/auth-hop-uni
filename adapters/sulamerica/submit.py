@@ -24,6 +24,7 @@ from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from . import config, sessao, _ui
 from . import codigos as codigos_mod
 from . import varredura
+from agente import FalhaDeterministica, MotivoFalha
 
 
 class SubmitAbortado(Exception):
@@ -436,9 +437,18 @@ async def executar(job: dict) -> dict:
             # numero do prestador que geramos (deterministico).
             return await _capturar_resultado(page, guia_prestador, evidencias)
 
+    except FalhaDeterministica:
+        raise  # ja classificado por um passo interno (defesa; hoje nao ocorre)
     except SubmitAbortado as e:
-        return {"status": "erro_submit", "numero_protocolo": None,
-                "evidencias": evidencias, "mensagem": str(e)}
+        # Costura A: pre-flight em memoria ja retornou erro_submit ANTES de abrir
+        # o browser, entao todo SubmitAbortado que chega aqui e' in-portal
+        # (layout/estado do portal) -> caso de agente. O detalhe carrega qual
+        # passo falhou (Eletivo/SP-SADT/carteirinha/procedimento/anexo/Validar...).
+        raise FalhaDeterministica(
+            motivo=MotivoFalha.ESTADO_INESPERADO,
+            etapa="submit_sulamerica",
+            detalhe=str(e),
+        )
     except PlaywrightTimeoutError as e:
         await _ui.snap(page, "timeout", evidencias) if "page" in dir() else None
         return {"status": "erro_submit", "numero_protocolo": None,
