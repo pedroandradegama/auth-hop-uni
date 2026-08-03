@@ -39,6 +39,7 @@ _ADAPTERS = {
     "amil": "adapters.amil",
     "sassepe": "adapters.sassepe",
     "sulamerica": "adapters.sulamerica",
+    "unimed_intercambio": "adapters.unimed_intercambio",
 }
 
 
@@ -137,6 +138,7 @@ async def _processar(job: JobPreAutorizacao):
                 "carteirinha": job.carteirinha,
                 "cpf": job.cpf,
                 "medico": job.medico,
+                "crm": job.crm,
                 "paciente_nome": job.paciente_nome,
                 "codigos": [c.model_dump() for c in job.codigos],
                 "arquivos": caminhos,
