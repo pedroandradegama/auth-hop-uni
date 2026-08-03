@@ -19,6 +19,7 @@ from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 from . import config, sessao
 from . import codigos as codigos_mod
+from agente import FalhaDeterministica, MotivoFalha
 
 
 # ── Evidencia ────────────────────────────────────────────────────────────────
@@ -530,10 +531,13 @@ async def _fluxo_connecta(dados: dict) -> dict:
             try:
                 await sessao.login(page)  # login + selecao de contexto
             except Exception as e:
-                cam = await _salvar_screenshot_erro(page, "login_contexto")
-                return {"status": "erro_submit", "numero_protocolo": None,
-                        "evidencias": [], "mensagem": f"Falha no login/contexto CONNECTA: {e}",
-                        "screenshot": cam}
+                await _salvar_screenshot_erro(page, "login_contexto")
+                raise FalhaDeterministica(
+                    motivo=MotivoFalha.ESTADO_INESPERADO,
+                    etapa="login_contexto",
+                    detalhe=f"Falha no login/contexto CONNECTA: {e}",
+                    url=page.url,
+                )
 
             await page.goto(config.URL_SOLICITACAO, wait_until="domcontentloaded")
             try:
@@ -549,18 +553,25 @@ async def _fluxo_connecta(dados: dict) -> dict:
 
             valor_carteira_ok = await _ler_valor_campo(page, "txbNumeroCarteira", tentativas=3, espera_ms=500)
             if not valor_carteira_ok:
-                cam = await _salvar_screenshot_erro(page, "carteira_nao_preencheu")
-                return {"status": "erro_submit", "numero_protocolo": None, "evidencias": [],
-                        "mensagem": "Campo Numero da Carteira nao ficou preenchido.",
-                        "screenshot": cam}
+                await _salvar_screenshot_erro(page, "carteira_nao_preencheu")
+                raise FalhaDeterministica(
+                    motivo=MotivoFalha.SELETOR_NAO_ACHADO,
+                    etapa="preencher_carteira",
+                    detalhe="Campo Numero da Carteira nao ficou preenchido.",
+                    seletor="#txbNumeroCarteira",
+                    url=page.url,
+                )
 
             nome_atual = await _ler_valor_campo(
                 page, "cphConteudo_udbBeneficiario_UcBlocoConteudo1_ctl00_txbNome", tentativas=20, espera_ms=500)
             if not nome_atual:
-                cam = await _salvar_screenshot_erro(page, "beneficiario_nao_encontrado")
-                return {"status": "erro_submit", "numero_protocolo": None, "evidencias": [],
-                        "mensagem": f"Beneficiario nao localizado para a carteirinha '{dados['carteirinha']}'.",
-                        "screenshot": cam}
+                await _salvar_screenshot_erro(page, "beneficiario_nao_encontrado")
+                raise FalhaDeterministica(
+                    motivo=MotivoFalha.VALIDACAO_PORTAL,
+                    etapa="buscar_beneficiario",
+                    detalhe=f"Beneficiario nao localizado para a carteirinha '{dados['carteirinha']}'.",
+                    url=page.url,
+                )
 
             ID_CODIGO_NOME_SOLICITANTE = "cphConteudo_udpDadosPrestadorCBO_ubcDadosPrestadorCBO_ctl00_udcAutoCompletePrestador_AcCombobox_I"
             ID_NOME_PROFISSIONAL = "cphConteudo_udpDadosPrestadorCBO_ubcDadosPrestadorCBO_ctl00_udcAcProfissional_udcAcProfissional_aspxComboBox_I"
@@ -621,9 +632,13 @@ async def _fluxo_connecta(dados: dict) -> dict:
                     erros_codigos.append(erro)
 
             if erros_codigos and len(erros_codigos) == len(codigos):
-                cam = await _salvar_screenshot_erro(page, "todos_codigos_falharam")
-                return {"status": "erro_submit", "numero_protocolo": None, "evidencias": [],
-                        "mensagem": " | ".join(erros_codigos), "screenshot": cam}
+                await _salvar_screenshot_erro(page, "todos_codigos_falharam")
+                raise FalhaDeterministica(
+                    motivo=MotivoFalha.SELETOR_NAO_ACHADO,
+                    etapa="adicionar_procedimento",
+                    detalhe=" | ".join(erros_codigos),
+                    url=page.url,
+                )
 
             await _salvar_screenshot_erro(page, "pre_envio_diagnostico")
             await clicar_enviar(page)
@@ -680,6 +695,8 @@ async def _fluxo_connecta(dados: dict) -> dict:
             resultado["recibo"] = recibo
             return resultado
 
+        except FalhaDeterministica:
+            raise  # Costura A: o runner (worker) decide se aciona o agente.
         except PlaywrightTimeoutError as e:
             cam = await _salvar_screenshot_erro(page, "timeout")
             return {"status": "erro_submit", "numero_protocolo": None, "evidencias": [],
