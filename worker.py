@@ -91,19 +91,26 @@ def _mapear_resultado_agente(res: "ResultadoAgente") -> dict:
             "mensagem": res.diagnostico or "Escalado pelo agente."}
 
 
+def _montar_job_agente(job: JobPreAutorizacao, dados: dict,
+                       caminhos: list[str]) -> dict:
+    """Dict do job entregue ao agente de fallback. Inclui crm (o agente re-monta
+    o formulario do zero na page fresh — sem crm nao reconstroi CONNECTA)."""
+    return {
+        "job_id": job.job_id, "convenio": job.convenio,
+        "carteirinha": job.carteirinha, "cpf": job.cpf,
+        "medico": job.medico, "crm": job.crm, "paciente_nome": job.paciente_nome,
+        "codigos": dados["codigos"],
+        "anexos": [{"nome": os.path.basename(p), "path": p} for p in caminhos],
+    }
+
+
 async def _rodar_agente(job: JobPreAutorizacao, dados: dict,
                         falha: FalhaDeterministica,
                         caminhos: list[str]) -> tuple[dict, "ResultadoAgente"]:
     """§6.1a: page própria fresh. O agente re-loga e retoma pelo snapshot.
     Retorna (dict submit_result, ResultadoAgente) — o segundo p/ Costura C."""
     adapter = _carregar_adapter(job.convenio)
-    job_agente = {
-        "job_id": job.job_id, "convenio": job.convenio,
-        "carteirinha": job.carteirinha, "cpf": job.cpf,
-        "medico": job.medico, "paciente_nome": job.paciente_nome,
-        "codigos": dados["codigos"],
-        "anexos": [{"nome": os.path.basename(p), "path": p} for p in caminhos],
-    }
+    job_agente = _montar_job_agente(job, dados, caminhos)
     ctx = ContextoSeguranca(
         dominio_portal=adapter.DOMINIO,
         anexos_permitidos={os.path.basename(p): p for p in caminhos},
