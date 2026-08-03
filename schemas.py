@@ -18,13 +18,18 @@ SUBTIPOS_VALIDOS = set(config.SUBTIPO_VALUE.keys())  # {"RM", "TC"}
 # Convenios cujo portal NAO usa sub_tipo RM/TC (codigo TUSS vai direto; ex.:
 # Sassepe, onde a Tabela e' sempre 22 e o exame pode ser mamografia/US/etc.).
 # Para esses, sub_tipo e' livre/opcional. Os demais (Unimed) exigem RM/TC.
-CONVENIOS_SEM_SUBTIPO = {"sassepe", "sulamerica"}
+CONVENIOS_SEM_SUBTIPO = {"sassepe", "sulamerica", "unimed_intercambio"}
+
+# Convenios cujo fluxo NAO envia anexo (pedido medico). Ex.: Unimed Intercambio
+# (CONNECTA) — o portal autoriza sem upload. Para esses, anexos e' opcional.
+CONVENIOS_SEM_ANEXO = {"unimed_intercambio"}
 
 
 class ExameItem(BaseModel):
     codigo_tuss: str
     sub_tipo: str | None = None
     nome: str | None = None
+    quantidade: int = 1
 
     @field_validator("codigo_tuss")
     @classmethod
@@ -73,10 +78,11 @@ class JobPreAutorizacao(BaseModel):
     carteirinha: str | None = None
     cpf: str | None = None
     medico: str
+    crm: str | None = None  # numero do conselho; exigido pelos adapters que usam
     codigos: list[ExameItem] = Field(min_length=1)
     anexos: list[AnexoItem] = Field(
-        min_length=1,
-        description="Pedido medico obrigatorio: pre-auth sem anexo seria negada.",
+        default_factory=list,
+        description="Pedido medico. Obrigatorio salvo convenios em CONVENIOS_SEM_ANEXO.",
     )
 
     @field_validator("job_id", "idempotency_key", "org_id", "medico")
@@ -128,4 +134,12 @@ class JobPreAutorizacao(BaseModel):
                         f"sub_tipo invalido '{e.sub_tipo}' para convenio "
                         f"'{self.convenio}'; use um de {sorted(SUBTIPOS_VALIDOS)}"
                     )
+        return self
+
+    @model_validator(mode="after")
+    def _anexo_por_convenio(self):
+        # Exige >=1 anexo salvo convenios isentos (ex.: unimed_intercambio).
+        if self.convenio not in CONVENIOS_SEM_ANEXO and len(self.anexos) < 1:
+            raise ValueError(
+                f"convenio '{self.convenio}' exige ao menos 1 anexo (pedido medico)")
         return self
