@@ -641,6 +641,36 @@ async def _fluxo_connecta(dados: dict) -> dict:
                 )
 
             await _salvar_screenshot_erro(page, "pre_envio_diagnostico")
+
+            # Diagnostico env-gated (default off): dumpa o DOM do botao Enviar
+            # SEM submeter, p/ mapear o seletor real com seguranca (nao gera guia).
+            _diag = os.environ.get("INTERCAMBIO_DIAG", "")
+            if _diag == "nosubmit":
+                dump = await page.evaluate(
+                    """() => {
+                      const out = {fab: [], enviar: []};
+                      document.querySelectorAll(
+                        'a.fixed-action-btn, a[href*="ButtonFloat"], [id*="ButtonFloat"], '
+                        + '[id*="BtnEnviar"], [id*="Enviar"], a[data-tooltip]'
+                      ).forEach(e => out.fab.push({
+                        tag: e.tagName, id: e.id, cls: e.className,
+                        tip: e.getAttribute('data-tooltip'),
+                        href: e.getAttribute('href'),
+                        txt: (e.textContent || '').trim().slice(0, 50),
+                        visivel: !!(e.offsetWidth || e.offsetHeight),
+                      }));
+                      Array.from(document.querySelectorAll('a,button,span,div,i')).forEach(e => {
+                        const t = (e.textContent || '').trim();
+                        if (t === 'Enviar' || (e.id || '').toLowerCase().includes('enviar'))
+                          out.enviar.push({tag: e.tagName, id: e.id, cls: e.className, txt: t.slice(0, 50)});
+                      });
+                      return out;
+                    }"""
+                )
+                return {"status": "diag_nosubmit", "numero_protocolo": None,
+                        "evidencias": [], "mensagem": "DIAG nosubmit (nao submeteu)",
+                        "dump": dump}
+
             await clicar_enviar(page)
             await page.wait_for_timeout(1500)
 
@@ -693,6 +723,17 @@ async def _fluxo_connecta(dados: dict) -> dict:
 
             resultado = _mapear_recibo(recibo, recibo.get("Status"))
             resultado["recibo"] = recibo
+            # Diagnostico do recibo (env-gated): se os campos vierem vazios, dumpa
+            # o DOM da tela pos-envio p/ mapear os seletores reais do recibo.
+            if os.environ.get("INTERCAMBIO_DIAG", "") == "recibo":
+                resultado["dump"] = await page.evaluate(
+                    """() => ({
+                      url: location.href,
+                      inputs_title: Array.from(document.querySelectorAll('input[title]'))
+                        .map(i => ({title: i.getAttribute('title'), id: i.id, val: i.value})),
+                      body: (document.body.innerText || '').slice(0, 2000),
+                    })"""
+                )
             return resultado
 
         except FalhaDeterministica:
