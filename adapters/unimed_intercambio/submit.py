@@ -421,33 +421,49 @@ async def tratar_alertas_pos_envio(page) -> dict:
 
 
 async def clicar_enviar(page):
-    menu_btn = page.locator('a.fixed-action-btn[data-tooltip="Opções"]').first
-    if await menu_btn.count() == 0:
-        menu_btn = page.locator("a").filter(has=page.locator("text=menu")).first
-    if await menu_btn.count() == 0:
-        menu_btn = page.locator(
-            'a[href="javascript:__doPostBack(\'ctl00$cphConteudo$BtnFloat$ButtonFloatHiddenEvent\',\'\')"]'
-        )
-    enviar_btn = page.locator("#ButtonFloat_JSFunction_BtnEnviar_BtnFloat")
+    """Abre a speed-dial (FAB 'Opções') e clica no sub-botao Enviar (send).
+    Seletores mapeados ao vivo (2026-08-03): o opener e' #main-btn (tooltip
+    'Opções'); o container .fixed-action-btn e' um DIV; o Enviar e'
+    #ButtonFloat_JSFunction_BtnEnviar_BtnFloat (class BtnEnviar, icone 'send')."""
+    # 1) abre o menu
     try:
-        await _click(menu_btn)
+        opener = page.locator('a#main-btn[data-tooltip="Opções"]').last
+        if await opener.count() == 0:
+            opener = page.locator('a.btn-floating[data-tooltip="Opções"]').last
+        await opener.scroll_into_view_if_needed(timeout=5000)
+        await opener.click(force=True, timeout=8000)
     except Exception:
         try:
-            await menu_btn.evaluate("el => el.click()")
+            await page.locator("#ButtonFloat_BtnFloat").click(force=True, timeout=5000)
         except Exception:
             pass
-    await page.wait_for_timeout(400)
+    await page.wait_for_timeout(700)  # animacao Materialize abrir a speed-dial
+
+    # 2) clica no Enviar
+    enviar_btn = page.locator("#ButtonFloat_JSFunction_BtnEnviar_BtnFloat")
     try:
-        await enviar_btn.wait_for(state="visible", timeout=5000)
-    except Exception:
-        pass
-    try:
-        await _click(enviar_btn)
+        await enviar_btn.click(force=True, timeout=8000)
     except Exception:
         try:
             await enviar_btn.evaluate("el => el.click()")
         except Exception:
             pass
+
+
+async def _exige_biometria_facial(page) -> bool:
+    """CONNECTA (intercambio) pode exigir BIOMETRIA FACIAL (prova de vida) para
+    finalizar. Isso NAO e' automatizavel headless (I7 — ato biometrico e' humano)."""
+    try:
+        return await page.evaluate(
+            """() => {
+              const el = document.querySelector('#lkbBiometriaFacial');
+              const vis = el && !!(el.offsetWidth || el.offsetHeight);
+              const txt = (document.body.innerText || '').toLowerCase();
+              return !!vis || txt.includes('biometria facial');
+            }"""
+        )
+    except Exception:
+        return False
 
 
 async def ler_recibo(page) -> dict:
@@ -683,6 +699,17 @@ async def _fluxo_connecta(dados: dict) -> dict:
                 cam = await _salvar_screenshot_erro(page, "erro_500_unimed")
                 return {"status": "erro_submit", "numero_protocolo": None, "evidencias": [],
                         "mensagem": "Servidor Unimed retornou Erro 500 (transitorio). Retentar em minutos.",
+                        "screenshot": cam}
+
+            # I7: se o portal pede BIOMETRIA FACIAL (prova de vida), NAO da p/
+            # finalizar headless — escala p/ humano (caso de operador local).
+            if await _exige_biometria_facial(page):
+                cam = await _salvar_screenshot_erro(page, "exige_biometria_facial")
+                return {"status": "requer_humano", "numero_protocolo": None,
+                        "requer_captura_manual": True, "evidencias": [],
+                        "mensagem": "CONNECTA exige BIOMETRIA FACIAL (prova de vida) para "
+                                    "finalizar — nao automatizavel headless (I7). Caso de "
+                                    "operador local com o beneficiario presente.",
                         "screenshot": cam}
 
             alertas = await tratar_alertas_pos_envio(page)
