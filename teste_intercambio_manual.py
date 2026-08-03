@@ -33,8 +33,8 @@ JOB = {
     "carteirinha": os.environ.get("TESTE_CART", "08650004956229017"),
     "medico": os.environ.get("TESTE_MEDICO", "PEDRO ANDRADE GAMA"),
     "crm": os.environ.get("TESTE_CRM", "21798"),
-    # 40901165 = Ultrassonografia de abdome total (CONFIRMAR no autocomplete).
-    "codigos": [{"codigo_tuss": os.environ.get("TESTE_TUSS", "40901165"),
+    # 40901122 = US - Abdome total (validado no autocomplete do CONNECTA 2026-08-03).
+    "codigos": [{"codigo_tuss": os.environ.get("TESTE_TUSS", "40901122"),
                  "quantidade": int(os.environ.get("TESTE_QTD", "1"))}],
 }
 
