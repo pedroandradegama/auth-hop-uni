@@ -450,16 +450,22 @@ async def clicar_enviar(page):
             pass
 
 
-async def _exige_biometria_facial(page) -> bool:
-    """CONNECTA (intercambio) pode exigir BIOMETRIA FACIAL (prova de vida) para
-    finalizar. Isso NAO e' automatizavel headless (I7 — ato biometrico e' humano)."""
+async def _exige_biometria(page) -> bool:
+    """CONNECTA (intercambio) exige BIOMETRIA (digital + facial / prova de vida)
+    do beneficiario para finalizar. Confirmado ao vivo 2026-08-03: modal
+    ucrBlocoBiometriaModal com 'Digital nao capturada'/'Face nao capturada'.
+    Ato biometrico e' humano (I7) — nao automatizavel headless."""
     try:
         return await page.evaluate(
             """() => {
-              const el = document.querySelector('#lkbBiometriaFacial');
-              const vis = el && !!(el.offsetWidth || el.offsetHeight);
-              const txt = (document.body.innerText || '').toLowerCase();
-              return !!vis || txt.includes('biometria facial');
+              const modal = document.querySelector('[id*="ucrBlocoBiometriaModal"]');
+              const modalVis = modal && !!(modal.offsetWidth || modal.offsetHeight);
+              const lk = document.querySelector('#lkbBiometriaFacial');
+              const lkVis = lk && !!(lk.offsetWidth || lk.offsetHeight);
+              const bf = document.querySelector('#cphConteudo_ucrBlocoBiometriaModal_txbSituacaoBioFacial');
+              const bd = document.querySelector('#cphConteudo_ucrBlocoBiometriaModal_txbSituacaoBio');
+              const naoCap = (el) => el && /n[aã]o capturad/i.test(el.value || '');
+              return !!(modalVis || lkVis || naoCap(bf) || naoCap(bd));
             }"""
         )
     except Exception:
@@ -467,20 +473,19 @@ async def _exige_biometria_facial(page) -> bool:
 
 
 async def ler_recibo(page) -> dict:
-    campos = [
-        "Número Guia Prestador",
-        "Número Guia Operadora",
-        "Status",
-        "Nº da Autorização",
-        "Data de Validade da Autorização",
-    ]
+    # IDs reais do bloco de recibo (mapeados ao vivo 2026-08-03) — mais robusto
+    # que casar por title (evita colidir com campos do formulario).
+    _P = "cphConteudo_ucrReciboGuia_ubcCabecalhoRecibo_ctl00_"
+    ids = {
+        "Número Guia Prestador": _P + "txbRecNumGuiaPrestador",
+        "Número Guia Operadora": _P + "txbRecNumGuiaOperadora",
+        "Status": _P + "txbRecStatus",
+        "Nº da Autorização": _P + "txbRecNumAutorizacao",
+        "Data de Validade da Autorização": _P + "txbRecDataValidade",
+    }
     dados = {}
-    for titulo in campos:
-        try:
-            valor = await page.locator(f'input[title="{titulo}"]').input_value()
-            dados[titulo] = valor
-        except Exception:
-            dados[titulo] = None
+    for titulo, id_campo in ids.items():
+        dados[titulo] = await _ler_valor_campo(page, id_campo, tentativas=1, espera_ms=100)
     return dados
 
 
@@ -701,15 +706,16 @@ async def _fluxo_connecta(dados: dict) -> dict:
                         "mensagem": "Servidor Unimed retornou Erro 500 (transitorio). Retentar em minutos.",
                         "screenshot": cam}
 
-            # I7: se o portal pede BIOMETRIA FACIAL (prova de vida), NAO da p/
-            # finalizar headless — escala p/ humano (caso de operador local).
-            if await _exige_biometria_facial(page):
-                cam = await _salvar_screenshot_erro(page, "exige_biometria_facial")
+            # I7: CONNECTA exige BIOMETRIA (digital + facial / prova de vida) do
+            # beneficiario. NAO finalizavel headless — escala p/ operador local.
+            if await _exige_biometria(page):
+                cam = await _salvar_screenshot_erro(page, "exige_biometria")
                 return {"status": "requer_humano", "numero_protocolo": None,
                         "requer_captura_manual": True, "evidencias": [],
-                        "mensagem": "CONNECTA exige BIOMETRIA FACIAL (prova de vida) para "
-                                    "finalizar — nao automatizavel headless (I7). Caso de "
-                                    "operador local com o beneficiario presente.",
+                        "mensagem": "CONNECTA exige BIOMETRIA (digital+facial / prova de vida) "
+                                    "do beneficiario para finalizar — nao automatizavel "
+                                    "headless (I7). Caso de operador local com o beneficiario "
+                                    "presente.",
                         "screenshot": cam}
 
             alertas = await tratar_alertas_pos_envio(page)
