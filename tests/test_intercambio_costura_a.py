@@ -9,6 +9,9 @@ from agente import FalhaDeterministica, MotivoFalha
 class _FakePage:
     url = "https://remote.unimedrecife.com.br:444/connecta/x"
 
+    def on(self, *a, **k):
+        return None
+
     async def screenshot(self, *a, **k):
         return None
 
