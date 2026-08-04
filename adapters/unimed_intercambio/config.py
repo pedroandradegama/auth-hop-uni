@@ -26,6 +26,10 @@ URL_SOLICITACAO = os.environ.get(
     "UNIMED_CONECTA_URL_SOLICITACAO",
     "https://remote.unimedrecife.com.br:444/connecta/Content/TISS/Prestador/GuiaSolicitacaoSPSADT.aspx",
 )
+URL_HISTORICO_AUTORIZACAO = os.environ.get(
+    "UNIMED_CONECTA_URL_HISTORICO",
+    "https://remote.unimedrecife.com.br:444/connecta/Content/TISS/Historico/Autorizacao.aspx",
+)
 
 
 def unimed_conecta_user() -> str:

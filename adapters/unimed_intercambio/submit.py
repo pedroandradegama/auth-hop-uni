@@ -697,8 +697,8 @@ async def _fluxo_connecta(dados: dict) -> dict:
             if _diag == "historico":
                 dumphist = {}
                 try:
-                    await page.get_by_text("Autorização", exact=True).last.click(timeout=8000)
-                    await page.wait_for_load_state("domcontentloaded")
+                    await page.goto(config.URL_HISTORICO_AUTORIZACAO,
+                                    wait_until="domcontentloaded")
                     await page.wait_for_timeout(3500)
                     dumphist = await page.evaluate(
                         """() => ({
