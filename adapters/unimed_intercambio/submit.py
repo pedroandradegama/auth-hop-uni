@@ -420,27 +420,37 @@ async def tratar_alertas_pos_envio(page) -> dict:
     return {"alertas": [k for k, v in presentes.items() if v]}
 
 
-async def clicar_enviar(page):
+async def clicar_enviar(page) -> dict:
     """Dispara o Enviar. O onclick real (mapeado ao vivo 2026-08-04) e':
     `if (validarFormulario('#conteudoFormulario')) __doPostBack('ctl00$cphConteudo$HiddenPostBack')`.
     Chamar validarFormulario por page.evaluate quebra em strict-mode (a funcao usa
-    arguments.callee). Solucao: dispatch_event('click') no proprio <a>, que roda o
-    onclick no contexto NATIVO da pagina (mesmo padrao dos outros portais Unimed,
-    onde page.click trava). Se a validacao reprovar, o onclick simplesmente nao
-    posta (o sucesso e' aferido pelo recibo)."""
-    alvo = page.locator("#ButtonFloat_JSFunction_BtnEnviar_BtnFloat")
+    arguments.callee). Solucao: injeta a MESMA logica via add_script_tag, que roda
+    em contexto NAO-strict, capturando o retorno de validarFormulario e postando
+    so' se true. Retorna {valido: True|False|str, erro?: str}."""
     try:
-        await alvo.dispatch_event("click")
-    except Exception:
+        await page.add_script_tag(content=(
+            "window.__envRes = (function(){ try {"
+            " var ok = (typeof validarFormulario === 'function')"
+            "   ? validarFormulario('#conteudoFormulario') : 'sem_validarFormulario';"
+            " if (ok === true) { __doPostBack('ctl00$cphConteudo$HiddenPostBack'); }"
+            " return {valido: ok};"
+            " } catch(e) { return {erro: String(e)}; } })();"
+        ))
+        res = await page.evaluate("() => window.__envRes") or {}
+    except Exception as e:
+        # CSP pode bloquear inline script — fallback p/ dispatch_event nativo.
         try:
-            await alvo.click(force=True, timeout=8000)
+            await page.locator("#ButtonFloat_JSFunction_BtnEnviar_BtnFloat").dispatch_event("click")
+            res = {"valido": "fallback_dispatch"}
+        except Exception:
+            res = {"erro": f"add_script_tag e dispatch falharam: {e}"}
+    if res.get("valido") is True or res.get("valido") == "fallback_dispatch":
+        try:
+            await page.wait_for_load_state("domcontentloaded", timeout=30000)
         except Exception:
             pass
-    try:
-        await page.wait_for_load_state("domcontentloaded", timeout=30000)
-    except Exception:
-        pass
-    await page.wait_for_timeout(2500)
+        await page.wait_for_timeout(2500)
+    return res
 
 
 async def ler_recibo(page) -> dict:
@@ -668,7 +678,7 @@ async def _fluxo_connecta(dados: dict) -> dict:
                         "evidencias": [], "mensagem": "DIAG nosubmit (nao submeteu)",
                         "dump": dump}
 
-            await clicar_enviar(page)
+            env_res = await clicar_enviar(page)
 
             try:
                 pagina_com_erro_500 = await page.evaluate(
@@ -758,6 +768,7 @@ async def _fluxo_connecta(dados: dict) -> dict:
                         }"""
                     )
                     resultado["pistas_validacao"] = pistas
+                    resultado["envio"] = env_res
                 except Exception:
                     pass
 
