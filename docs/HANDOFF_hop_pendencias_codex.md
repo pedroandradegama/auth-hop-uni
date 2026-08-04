@@ -1,4 +1,4 @@
-# HANDOFF (HOP / Codex) — Pendências do lado HOP — **v2 (corrigido)**
+# HANDOFF (HOP / Codex) — Pendências do lado HOP — **v3 (2ª revisão do Codex incorporada)**
 
 **Para:** sessão Codex que edita o HOP (Lovable + Supabase).
 **De:** sessão da esteira VPS (`auth-hop-uni`).
@@ -51,9 +51,11 @@ Correções (recriar a função com `CREATE OR REPLACE`):
    ```sql
    if v_convenio_slug in ('sassepe','sulamerica','unimed_intercambio') then
    ```
-2. **Quantidade:** em AMBOS os ramos, incluir no `jsonb_build_object` do exame:
+2. **Quantidade:** em AMBOS os ramos, incluir no `jsonb_build_object` do exame — com **cast defensivo** (valor não-numérico derrubaria a RPC), mínimo 1:
    ```sql
-   'quantidade', coalesce((e->>'quantidade')::int, 1)
+   'quantidade',
+   case when coalesce(e->>'quantidade','') ~ '^[1-9][0-9]*$'
+        then (e->>'quantidade')::int else 1 end
    ```
 3. **CRM:** adicionar a coluna no `insert into public.autorizacoes (... , medico_solicitante_crm)` e no `values (...)`:
    ```sql
@@ -97,7 +99,14 @@ where org_id='5aa48c18-ea25-4b9f-a54c-2120d509c7b4' and nome ilike '%intercambio
 Testar que, para um dossiê de intercâmbio, o job final tem: `convenio="unimed_intercambio"`, `crm` preenchido, `quantidade` por exame, exames de qualquer modalidade preservados, `anexos` pode ser vazio.
 
 ### 2.7 Já corrigido no lado VPS (por esta sessão)
-- `worker._montar_job_agente` agora inclui `crm` no `job_agente` do agente de fallback (era a lacuna que o Codex apontou em `worker.py:100`). Commitado.
+- `worker._montar_job_agente` agora inclui `crm` no `job_agente` do agente de fallback. Commitado.
+- **VPS não muda com esta 2ª revisão** — o contrato do job segue `medico` (string do nome) + `crm` (string). A seleção estruturada de médico (§2.8.3) é interna do HOP; o HOP achata p/ `medico`+`crm` no job. O adapter já exige `crm` e é robusto a `quantidade` ausente (default 1).
+
+### 2.8 Lacunas de FRONTEND + integridade (2ª revisão do Codex — ENTRAM no escopo)
+1. **TERCEIRO enfileirador (a página direta):** `src/pages/operacoes/pre-atendimento/AutorizacaoNovaPage.tsx` (~289) chama `fn_autorizacao_enfileirar` direto. Hoje: só `sassepe`, fallback de slug p/ sassepe, **sem CRM**, **exige anexo**, exige carteira **E** CPF juntos, e **expande quantidade em itens repetidos** (em vez de `quantidade`). Precisa: rotear intercâmbio, enviar CRM, tornar anexo opcional p/ intercâmbio, aceitar carteira OU CPF, e mandar `quantidade` (não repetir itens). Os enfileiradores efetivos são o HITL e ESTA página (o orquestrador só monta o dossiê).
+2. **Quantidade perdida no HITL:** o front manda `quantidade` em `autorizacao_input`, mas o tipo/mapeamento do `hitl-resolver` (~668) descarta. Corrigir o tipo `exames?: Array<{slug; nome?; quantidade?}>` e, ao montar exames: `quantidade: Math.max(1, Number(e.quantidade ?? 1))`.
+3. **CRM pode ser do médico ERRADO (risco clínico):** `MedicoSolicitanteCombobox` (~16) mostra o CRM mas o `onChange` devolve só o nome. Se o operador trocar o médico, o Edge pode casar nome-novo + CRM-antigo do dossiê. Payload deve levar seleção **estruturada** `medico: {nome, crm, id?}`. Prioridade: (a) CRM selecionado pelo operador; (b) CRM do dossiê **só se** o nome normalizado for o mesmo; (c) senão, **bloquear intercâmbio por CRM ausente**. Nunca inferir CRM antigo após o nome mudar.
+4. **Higiene de migration + jobs antigos:** NÃO editar a migration aplicada `20260630203905`; criar migration NOVA (coluna + `CREATE OR REPLACE` + comentários + regenerar `types.ts`). A RPC retorna a autorização existente para a mesma `idempotency_key` → **repetir o "Go" NÃO conserta linhas antigas** com slug/CRM errado. **Antes de religar o polling**, auditar autorizações não-terminais: corrigir as identificáveis com segurança, mover as ambíguas p/ `requer_humano`, e **nunca** deixar job antigo defeituoso ser reivindicado.
 
 ---
 
@@ -112,12 +121,19 @@ Tratar como projeto próprio (roteamento → segurança/idempotência → UI →
 ## 4. Agente de fallback — DRIFT a resolver
 Codex não achou migration versionando `rpa_agente_execucoes` nem `fn_rpa_agente_registrar` (só aparecem no banco/tipos). **Criar migration reprodutível** desses objetos (e de quaisquer RPCs/tabelas hoje só-no-banco) p/ eliminar drift repo↔banco.
 
-## 5. Ordem recomendada (Codex)
-1. Pendência 1: migration (CRM + RPC modalidade/quantidade) + 2 Edges (slug/crm) + `proximo-job` (crm/quantidade).
-2. Testes de contrato do job.
-3. Conferir `cfg_convenios` **ao vivo** (o ZIP não prova o estado do banco).
-4. Migrations reprodutíveis (incl. agente).
-5. Execução local como frente separada.
+## 5. Ordem recomendada (revisada pelo Codex — 10 passos)
+1. **Pausar temporariamente o polling da VPS** durante a mudança do contrato.
+2. Criar **migration nova**: coluna `medico_solicitante_crm` + RPC corrigida (`CREATE OR REPLACE`: modalidade p/ intercâmbio + `quantidade` defensiva + CRM).
+3. Corrigir `hitl-resolver`: slug (intercambio antes de unimed) + CRM seguro (§2.8.3) + quantidade (§2.8.2).
+4. Corrigir o dossiê do `orquestrador-processar` (slug + CRM estruturado antes do `formatarMedicoPortal`).
+5. Corrigir `proximo-job-autorizacao` (enviar `crm` + `quantidade`).
+6. Corrigir `AutorizacaoNovaPage` + o seletor estruturado de médico (§2.8.1, §2.8.3).
+7. `useConvenios` expõe `convenio_slug` e usa como fonte (evita 3 normalizadores).
+8. **Auditar jobs antigos** não-terminais (corrigir/mover p/ requer_humano; §2.8.4).
+9. Testes de contrato → **religar o polling**.
+10. Fazer uma guia real pelo fluxo HOP → VPS.
+
+(Execução local = frente separada; agente = criar migration reprodutível do drift, §4.)
 
 ## 6. Validação ponta-a-ponta (quando §2 pronto)
 "Go" no HITL com UNIMED INTERCAMBIO → `autorizacoes.convenio='unimed_intercambio'` + `medico_solicitante_crm` + exames c/ quantidade → `proximo-job` devolve job com `crm`/`quantidade` → VPS roda CONNECTA. Creds `UNIMED_CONECTA_*` já no `.env` da VPS.
