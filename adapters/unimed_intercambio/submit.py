@@ -450,28 +450,6 @@ async def clicar_enviar(page):
             pass
 
 
-async def _exige_biometria(page) -> bool:
-    """CONNECTA (intercambio) exige BIOMETRIA (digital + facial / prova de vida)
-    do beneficiario para finalizar. Confirmado ao vivo 2026-08-03: modal
-    ucrBlocoBiometriaModal com 'Digital nao capturada'/'Face nao capturada'.
-    Ato biometrico e' humano (I7) — nao automatizavel headless."""
-    try:
-        return await page.evaluate(
-            """() => {
-              const modal = document.querySelector('[id*="ucrBlocoBiometriaModal"]');
-              const modalVis = modal && !!(modal.offsetWidth || modal.offsetHeight);
-              const lk = document.querySelector('#lkbBiometriaFacial');
-              const lkVis = lk && !!(lk.offsetWidth || lk.offsetHeight);
-              const bf = document.querySelector('#cphConteudo_ucrBlocoBiometriaModal_txbSituacaoBioFacial');
-              const bd = document.querySelector('#cphConteudo_ucrBlocoBiometriaModal_txbSituacaoBio');
-              const naoCap = (el) => el && /n[aã]o capturad/i.test(el.value || '');
-              return !!(modalVis || lkVis || naoCap(bf) || naoCap(bd));
-            }"""
-        )
-    except Exception:
-        return False
-
-
 async def ler_recibo(page) -> dict:
     # IDs reais do bloco de recibo (mapeados ao vivo 2026-08-03) — mais robusto
     # que casar por title (evita colidir com campos do formulario).
@@ -706,17 +684,29 @@ async def _fluxo_connecta(dados: dict) -> dict:
                         "mensagem": "Servidor Unimed retornou Erro 500 (transitorio). Retentar em minutos.",
                         "screenshot": cam}
 
-            # I7: CONNECTA exige BIOMETRIA (digital + facial / prova de vida) do
-            # beneficiario. NAO finalizavel headless — escala p/ operador local.
-            if await _exige_biometria(page):
-                cam = await _salvar_screenshot_erro(page, "exige_biometria")
-                return {"status": "requer_humano", "numero_protocolo": None,
-                        "requer_captura_manual": True, "evidencias": [],
-                        "mensagem": "CONNECTA exige BIOMETRIA (digital+facial / prova de vida) "
-                                    "do beneficiario para finalizar — nao automatizavel "
-                                    "headless (I7). Caso de operador local com o beneficiario "
-                                    "presente.",
-                        "screenshot": cam}
+            # Diagnostico do ENVIO (env-gated): mostra o que aparece apos clicar
+            # Enviar (modal de biometria? botoes p/ prosseguir sem biometria?).
+            if os.environ.get("INTERCAMBIO_DIAG", "") == "envio":
+                d = await page.evaluate(
+                    """() => {
+                      const vis = e => e && !!(e.offsetWidth || e.offsetHeight);
+                      const modal = document.querySelector('[id*="ucrBlocoBiometriaModal"]');
+                      const overlay = document.querySelector('.modal.open, .modal[style*="display: block"], .lean-overlay');
+                      const btns = Array.from(document.querySelectorAll(
+                        'a,button,input[type=button],input[type=submit]'))
+                        .filter(vis).map(e => ({
+                          tag: e.tagName, id: e.id, cls: e.className,
+                          txt: (e.textContent || e.value || '').trim().slice(0, 50)})).slice(0, 80);
+                      return {url: location.href,
+                              modal_presente: !!modal, modal_visivel: vis(modal),
+                              modal_html: modal ? modal.outerHTML.slice(0, 2000) : null,
+                              overlay_aberto: vis(overlay),
+                              botoes_visiveis: btns,
+                              body: (document.body.innerText || '').slice(0, 4000)};
+                    }"""
+                )
+                return {"status": "diag_envio", "numero_protocolo": None,
+                        "evidencias": [], "mensagem": "DIAG envio", "dump": d}
 
             alertas = await tratar_alertas_pos_envio(page)
 
