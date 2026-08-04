@@ -420,34 +420,34 @@ async def tratar_alertas_pos_envio(page) -> dict:
     return {"alertas": [k for k, v in presentes.items() if v]}
 
 
-async def clicar_enviar(page):
-    """Abre a speed-dial (FAB 'Opções') e clica no sub-botao Enviar (send).
-    Seletores mapeados ao vivo (2026-08-03): o opener e' #main-btn (tooltip
-    'Opções'); o container .fixed-action-btn e' um DIV; o Enviar e'
-    #ButtonFloat_JSFunction_BtnEnviar_BtnFloat (class BtnEnviar, icone 'send')."""
-    # 1) abre o menu
-    try:
-        opener = page.locator('a#main-btn[data-tooltip="Opções"]').last
-        if await opener.count() == 0:
-            opener = page.locator('a.btn-floating[data-tooltip="Opções"]').last
-        await opener.scroll_into_view_if_needed(timeout=5000)
-        await opener.click(force=True, timeout=8000)
-    except Exception:
+async def clicar_enviar(page) -> dict:
+    """Dispara o Enviar replicando o onclick REAL do portal (mapeado ao vivo
+    2026-08-04): `if (validarFormulario('#conteudoFormulario')) __doPostBack(
+    'ctl00$cphConteudo$HiddenPostBack')`. O clique no <a> da speed-dial (Materialize,
+    transformado/scaled) nao dispara o onclick de forma confiavel; chamamos a mesma
+    logica por JS. Se a validacao reprovar, NAO posta (igual ao humano).
+    Retorna {postou: bool, valido: bool|None, erro?: str}."""
+    res = await page.evaluate(
+        """() => {
+          try {
+            let ok = true;
+            if (typeof validarFormulario === 'function')
+              ok = !!validarFormulario('#conteudoFormulario');
+            if (ok) {
+              __doPostBack('ctl00$cphConteudo$HiddenPostBack');
+              return {postou: true, valido: true};
+            }
+            return {postou: false, valido: false};
+          } catch (e) { return {postou: false, erro: String(e)}; }
+        }"""
+    )
+    if res.get("postou"):
         try:
-            await page.locator("#ButtonFloat_BtnFloat").click(force=True, timeout=5000)
+            await page.wait_for_load_state("domcontentloaded", timeout=30000)
         except Exception:
             pass
-    await page.wait_for_timeout(700)  # animacao Materialize abrir a speed-dial
-
-    # 2) clica no Enviar
-    enviar_btn = page.locator("#ButtonFloat_JSFunction_BtnEnviar_BtnFloat")
-    try:
-        await enviar_btn.click(force=True, timeout=8000)
-    except Exception:
-        try:
-            await enviar_btn.evaluate("el => el.click()")
-        except Exception:
-            pass
+        await page.wait_for_timeout(2000)
+    return res
 
 
 async def ler_recibo(page) -> dict:
@@ -675,8 +675,26 @@ async def _fluxo_connecta(dados: dict) -> dict:
                         "evidencias": [], "mensagem": "DIAG nosubmit (nao submeteu)",
                         "dump": dump}
 
-            await clicar_enviar(page)
-            await page.wait_for_timeout(1500)
+            env_res = await clicar_enviar(page)
+            if not env_res.get("postou"):
+                # validarFormulario reprovou (campo obrigatorio) ou erro JS -> nao
+                # submeteu. Diagnostica quais campos e escala (nunca "conclui").
+                dump_val = await page.evaluate(
+                    """() => {
+                      const inval = Array.from(document.querySelectorAll(
+                        '.invalid, input.error, .validate.invalid, [aria-invalid="true"]'))
+                        .map(e => ({id: e.id, name: e.name, cls: e.className})).slice(0, 40);
+                      const m = (document.body.innerText || '').match(/obrigat[^\\n]{0,90}/i);
+                      return {invalidos: inval, alerta: m ? m[0] : null};
+                    }"""
+                )
+                cam = await _salvar_screenshot_erro(page, "envio_validacao_reprovou")
+                return {"status": "requer_humano", "numero_protocolo": None,
+                        "requer_captura_manual": True, "evidencias": [],
+                        "mensagem": (f"Envio nao postou (validarFormulario="
+                                     f"{env_res.get('valido')}, erro={env_res.get('erro')}). "
+                                     f"Invalidos/alerta: {dump_val}"),
+                        "screenshot": cam}
 
             try:
                 pagina_com_erro_500 = await page.evaluate(
