@@ -491,6 +491,100 @@ def _mapear_recibo(recibo: dict, status: str | None) -> dict:
     }
 
 
+# ── Captura pos-envio via Historico (o CONNECTA nao mostra recibo inline) ─────
+async def _capturar_no_historico(page, numero_guia_prestador, carteirinha, data_hoje):
+    """Busca a guia recem-enviada no Historico de Autorizacoes (filtro por
+    carteirinha + periodo=hoje) e casa a linha pelo Nº Guia Prestador. Colunas da
+    dtLista (mapeadas ao vivo 2026-08-04): [3]=Status Guia, [4]=Nº Autorizacao
+    (senha), [5]=carteira, [7]=data, [10]=Nº Guia (operadora), [11]=Nº Guia
+    Prestador. Retorna dict do registro, ou None (I3: sem match seguro, nao chuta)."""
+    try:
+        await page.goto(config.URL_HISTORICO_AUTORIZACAO, wait_until="domcontentloaded")
+    except Exception:
+        return None
+    await page.wait_for_timeout(1500)
+    cart = "".join(filter(str.isdigit, carteirinha or ""))
+    try:
+        await page.locator("#cphConteudo_txbCodBeneficiario").fill(cart)
+    except Exception:
+        pass
+    for camp in ("#cphConteudo_txbDataInicial", "#cphConteudo_txbDataFinal"):
+        try:
+            await page.locator(camp).fill(data_hoje)
+        except Exception:
+            pass
+    try:
+        await page.locator("#cphConteudo_btnConfirmar").click(force=True, timeout=10000)
+    except Exception:
+        pass
+    for _ in range(20):
+        await page.wait_for_timeout(1000)
+        try:
+            pronto = await page.evaluate(
+                """() => !((document.body.innerText||'').includes('Carregando...')
+                          || (document.body.innerText||'').includes('Pesquisando'))""")
+        except Exception:
+            pronto = False
+        if pronto:
+            break
+    try:
+        rows = await page.evaluate(
+            """() => {
+              const t = document.querySelector('#cphConteudo_dtLista')
+                        || document.querySelector('#dtLista');
+              if (!t) return [];
+              return Array.from(t.querySelectorAll('tbody tr')).map(r =>
+                Array.from(r.querySelectorAll('td')).map(c => (c.innerText || '').trim()));
+            }""")
+    except Exception:
+        rows = []
+    alvo = "".join(filter(str.isdigit, numero_guia_prestador or ""))
+    melhor = None
+    for cells in rows:
+        if len(cells) < 12:
+            continue
+        reg = {"status_guia": cells[3], "autorizacao": cells[4],
+               "guia_operadora": cells[10], "guia_prestador": cells[11], "data": cells[7]}
+        if alvo and "".join(filter(str.isdigit, cells[11])) == alvo:
+            return reg                      # match exato pelo Nº Guia Prestador
+        if melhor is None:
+            melhor = reg                    # fallback (so' usado se nao houver alvo)
+    return None if alvo else melhor
+
+
+def _mapear_captura(cap: dict | None) -> dict:
+    """Registro do Historico -> submit_result. Autorizado -> protocolado
+    (numero_protocolo = Nº Autorizacao/senha). Negado/Cancelada/desconhecido ->
+    requer_humano (nao e' erro do bot; e' decisao do portal). I3 conservador."""
+    if not cap:
+        return {"status": "requer_humano", "numero_protocolo": None,
+                "requer_captura_manual": True, "evidencias": [],
+                "mensagem": "Enviado, mas guia nao localizada no Historico. Conferir manual."}
+    st = (cap.get("status_guia") or "").strip().lower()
+    base = {"numero_autorizacao": cap.get("autorizacao"),
+            "numero_guia_operadora": cap.get("guia_operadora"),
+            "numero_guia_prestador": cap.get("guia_prestador"),
+            "evidencias": []}
+    if st == "autorizado":
+        return {"status": "protocolado",
+                "numero_protocolo": cap.get("autorizacao") or cap.get("guia_operadora"),
+                "mensagem": (f"Autorizado. Senha/autorizacao {cap.get('autorizacao')}, "
+                             f"guia operadora {cap.get('guia_operadora')}."), **base}
+    if st.startswith("negad"):
+        return {"status": "requer_humano", "numero_protocolo": None,
+                "requer_captura_manual": True,
+                "mensagem": f"Guia NEGADA pela Unimed (guia prestador {cap.get('guia_prestador')}).",
+                **base}
+    if st.startswith("cancelad"):
+        return {"status": "requer_humano", "numero_protocolo": None,
+                "requer_captura_manual": True,
+                "mensagem": f"Guia CANCELADA (guia prestador {cap.get('guia_prestador')}).",
+                **base}
+    return {"status": "requer_humano", "numero_protocolo": None,
+            "requer_captura_manual": True,
+            "mensagem": f"Status '{cap.get('status_guia')}' — conferir manual.", **base}
+
+
 def _job_para_dados(job: dict) -> dict:
     return {
         "carteirinha": job["carteirinha"],
@@ -764,6 +858,12 @@ async def _fluxo_connecta(dados: dict) -> dict:
                         "evidencias": [], "mensagem": "DIAG capturar (nao submeteu)",
                         "dump": dcap}
 
+            # Captura o Nº da Guia (prestador) ANTES de enviar — chave p/ achar a
+            # guia no Historico (o CONNECTA nao mostra recibo inline pos-envio).
+            numero_guia_prestador = await _ler_valor_campo(
+                page, "cphConteudo_UcBlocoConteudo2_ctl00_txbNumeroGuia",
+                tentativas=2, espera_ms=200)
+
             env_res = await clicar_enviar(page)
 
             try:
@@ -829,47 +929,25 @@ async def _fluxo_connecta(dados: dict) -> dict:
                 await _click(page.get_by_role("button", name="Continuar").first)
                 await page.wait_for_timeout(1500)
 
-            recibo = await ler_recibo(page)
             ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-            caminho_screenshot = os.path.join(config.SCREENSHOTS_DIR, f"autorizacao_connecta_{ts}.png")
             try:
-                await page.screenshot(path=caminho_screenshot, full_page=True)
+                await page.screenshot(
+                    path=os.path.join(config.SCREENSHOTS_DIR, f"pos_envio_{ts}.png"),
+                    full_page=True)
             except Exception:
                 pass
 
-            resultado = _mapear_recibo(recibo, recibo.get("Status"))
-            resultado["recibo"] = recibo
-
-            # Nao autorizou (recibo vazio): pode ser validacao do portal reprovada
-            # (campo obrigatorio) ou alerta. Anexa pistas p/ diagnostico (I2).
-            if resultado["status"] != "protocolado":
-                try:
-                    pistas = await page.evaluate(
-                        """() => {
-                          const inval = Array.from(document.querySelectorAll(
-                            '.invalid, input.error, .validate.invalid, [aria-invalid="true"]'))
-                            .map(e => ({id: e.id, name: e.name, cls: e.className})).slice(0, 40);
-                          const m = (document.body.innerText || '').match(/obrigat[^\\n]{0,90}/i);
-                          return {invalidos: inval, alerta: m ? m[0] : null};
-                        }"""
-                    )
-                    resultado["pistas_validacao"] = pistas
-                    resultado["envio"] = env_res
-                    resultado["dialogos"] = dialogos
-                except Exception:
-                    pass
-
-            # Diagnostico do recibo (env-gated): se os campos vierem vazios, dumpa
-            # o DOM da tela pos-envio p/ mapear os seletores reais do recibo.
-            if os.environ.get("INTERCAMBIO_DIAG", "") == "recibo":
-                resultado["dump"] = await page.evaluate(
-                    """() => ({
-                      url: location.href,
-                      inputs_title: Array.from(document.querySelectorAll('input[title]'))
-                        .map(i => ({title: i.getAttribute('title'), id: i.id, val: i.value})),
-                      body: (document.body.innerText || '').slice(0, 2000),
-                    })"""
-                )
+            # O CONNECTA nao mostra recibo inline: a guia vai pro Historico.
+            # Captura status/senha/operadora la, casando pelo Nº Guia Prestador.
+            data_hoje = datetime.now().strftime("%d/%m/%Y")
+            cap = await _capturar_no_historico(
+                page, numero_guia_prestador, dados["carteirinha"], data_hoje)
+            resultado = _mapear_captura(cap)
+            resultado["numero_guia_prestador_enviado"] = numero_guia_prestador
+            if os.environ.get("INTERCAMBIO_DIAG", ""):
+                resultado["envio"] = env_res
+                resultado["dialogos"] = dialogos
+                resultado["cap"] = cap
             return resultado
 
         except FalhaDeterministica:
