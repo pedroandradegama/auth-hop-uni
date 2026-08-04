@@ -15,12 +15,19 @@
 ## 0. Mapa em 6 linhas
 HOP enfileira autorizações (`fn_autorizacao_enfileirar` → `public.autorizacoes`); worker VPS **puxa** via `proximo-job-autorizacao` (claim atômico) e **posta** via `receive-autorizacao` (HMAC-SHA256 sobre corpo cru, header `X-HOP-Signature: sha256=<hex>`). O `convenio` (slug) no job decide o adapter. Falha determinística → agente LLM (F0 só diagnostica) + `agent_trace`.
 
-## 1. Contrato que a VPS espera (já em produção)
+## 1. Contrato que a VPS espera (adapter VALIDADO ao vivo 2026-08-04)
 ```
-convenio (slug), carteirinha|cpf, medico (string), crm (string), 
+convenio (slug), carteirinha|cpf, medico (string), crm (string),
 codigos:[{codigo_tuss, sub_tipo?, quantidade?}], anexos (opcional p/ unimed_intercambio)
 ```
 `unimed_intercambio`: sem anexo, sem RM/TC obrigatório, **crm obrigatório**, quantidade usada.
+
+**Status VPS:** o adapter `unimed_intercambio` está **provado ponta-a-ponta** — cria guia real no CONNECTA e captura o resultado no Histórico (Autorizado→`protocolado` com senha; Negado/Cancelada→`requer_humano`; o portal deduplica sozinho). Só falta o HOP **produzir o job correto** (este handoff). Exemplo real que funcionou:
+```json
+{ "convenio": "unimed_intercambio", "carteirinha": "08650004956229017",
+  "medico": "PEDRO ANDRADE GAMA", "crm": "21798",
+  "codigos": [{"codigo_tuss": "40901122", "quantidade": 1}] }
+```
 
 ---
 
