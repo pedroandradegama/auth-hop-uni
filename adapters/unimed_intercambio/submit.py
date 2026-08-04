@@ -529,6 +529,20 @@ async def _fluxo_connecta(dados: dict) -> dict:
     codigos = dados["codigos"]
 
     async with sessao.navegador() as page:
+        # Aceita qualquer dialogo (confirm/alert). O Playwright auto-DISPENSA
+        # dialogos por padrao (confirm -> false), o que CANCELARIA o envio se o
+        # portal pedir "Deseja enviar?". Aceitando, o submit prossegue; tambem
+        # registra o que apareceu (evidencia).
+        dialogos: list = []
+
+        async def _on_dialog(d):
+            dialogos.append({"type": d.type, "message": (d.message or "")[:200]})
+            try:
+                await d.accept()
+            except Exception:
+                pass
+
+        page.on("dialog", _on_dialog)
         try:
             try:
                 await sessao.login(page)  # login + selecao de contexto
@@ -769,6 +783,7 @@ async def _fluxo_connecta(dados: dict) -> dict:
                     )
                     resultado["pistas_validacao"] = pistas
                     resultado["envio"] = env_res
+                    resultado["dialogos"] = dialogos
                 except Exception:
                     pass
 
