@@ -420,34 +420,27 @@ async def tratar_alertas_pos_envio(page) -> dict:
     return {"alertas": [k for k, v in presentes.items() if v]}
 
 
-async def clicar_enviar(page) -> dict:
-    """Dispara o Enviar replicando o onclick REAL do portal (mapeado ao vivo
-    2026-08-04): `if (validarFormulario('#conteudoFormulario')) __doPostBack(
-    'ctl00$cphConteudo$HiddenPostBack')`. O clique no <a> da speed-dial (Materialize,
-    transformado/scaled) nao dispara o onclick de forma confiavel; chamamos a mesma
-    logica por JS. Se a validacao reprovar, NAO posta (igual ao humano).
-    Retorna {postou: bool, valido: bool|None, erro?: str}."""
-    res = await page.evaluate(
-        """() => {
-          try {
-            let ok = true;
-            if (typeof validarFormulario === 'function')
-              ok = !!validarFormulario('#conteudoFormulario');
-            if (ok) {
-              __doPostBack('ctl00$cphConteudo$HiddenPostBack');
-              return {postou: true, valido: true};
-            }
-            return {postou: false, valido: false};
-          } catch (e) { return {postou: false, erro: String(e)}; }
-        }"""
-    )
-    if res.get("postou"):
+async def clicar_enviar(page):
+    """Dispara o Enviar. O onclick real (mapeado ao vivo 2026-08-04) e':
+    `if (validarFormulario('#conteudoFormulario')) __doPostBack('ctl00$cphConteudo$HiddenPostBack')`.
+    Chamar validarFormulario por page.evaluate quebra em strict-mode (a funcao usa
+    arguments.callee). Solucao: dispatch_event('click') no proprio <a>, que roda o
+    onclick no contexto NATIVO da pagina (mesmo padrao dos outros portais Unimed,
+    onde page.click trava). Se a validacao reprovar, o onclick simplesmente nao
+    posta (o sucesso e' aferido pelo recibo)."""
+    alvo = page.locator("#ButtonFloat_JSFunction_BtnEnviar_BtnFloat")
+    try:
+        await alvo.dispatch_event("click")
+    except Exception:
         try:
-            await page.wait_for_load_state("domcontentloaded", timeout=30000)
+            await alvo.click(force=True, timeout=8000)
         except Exception:
             pass
-        await page.wait_for_timeout(2000)
-    return res
+    try:
+        await page.wait_for_load_state("domcontentloaded", timeout=30000)
+    except Exception:
+        pass
+    await page.wait_for_timeout(2500)
 
 
 async def ler_recibo(page) -> dict:
@@ -675,26 +668,7 @@ async def _fluxo_connecta(dados: dict) -> dict:
                         "evidencias": [], "mensagem": "DIAG nosubmit (nao submeteu)",
                         "dump": dump}
 
-            env_res = await clicar_enviar(page)
-            if not env_res.get("postou"):
-                # validarFormulario reprovou (campo obrigatorio) ou erro JS -> nao
-                # submeteu. Diagnostica quais campos e escala (nunca "conclui").
-                dump_val = await page.evaluate(
-                    """() => {
-                      const inval = Array.from(document.querySelectorAll(
-                        '.invalid, input.error, .validate.invalid, [aria-invalid="true"]'))
-                        .map(e => ({id: e.id, name: e.name, cls: e.className})).slice(0, 40);
-                      const m = (document.body.innerText || '').match(/obrigat[^\\n]{0,90}/i);
-                      return {invalidos: inval, alerta: m ? m[0] : null};
-                    }"""
-                )
-                cam = await _salvar_screenshot_erro(page, "envio_validacao_reprovou")
-                return {"status": "requer_humano", "numero_protocolo": None,
-                        "requer_captura_manual": True, "evidencias": [],
-                        "mensagem": (f"Envio nao postou (validarFormulario="
-                                     f"{env_res.get('valido')}, erro={env_res.get('erro')}). "
-                                     f"Invalidos/alerta: {dump_val}"),
-                        "screenshot": cam}
+            await clicar_enviar(page)
 
             try:
                 pagina_com_erro_500 = await page.evaluate(
@@ -769,6 +743,24 @@ async def _fluxo_connecta(dados: dict) -> dict:
 
             resultado = _mapear_recibo(recibo, recibo.get("Status"))
             resultado["recibo"] = recibo
+
+            # Nao autorizou (recibo vazio): pode ser validacao do portal reprovada
+            # (campo obrigatorio) ou alerta. Anexa pistas p/ diagnostico (I2).
+            if resultado["status"] != "protocolado":
+                try:
+                    pistas = await page.evaluate(
+                        """() => {
+                          const inval = Array.from(document.querySelectorAll(
+                            '.invalid, input.error, .validate.invalid, [aria-invalid="true"]'))
+                            .map(e => ({id: e.id, name: e.name, cls: e.className})).slice(0, 40);
+                          const m = (document.body.innerText || '').match(/obrigat[^\\n]{0,90}/i);
+                          return {invalidos: inval, alerta: m ? m[0] : null};
+                        }"""
+                    )
+                    resultado["pistas_validacao"] = pistas
+                except Exception:
+                    pass
+
             # Diagnostico do recibo (env-gated): se os campos vierem vazios, dumpa
             # o DOM da tela pos-envio p/ mapear os seletores reais do recibo.
             if os.environ.get("INTERCAMBIO_DIAG", "") == "recibo":
