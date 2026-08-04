@@ -717,6 +717,53 @@ async def _fluxo_connecta(dados: dict) -> dict:
                         "evidencias": [], "mensagem": "DIAG historico (nao submeteu)",
                         "dump": dumphist}
 
+            # Diag da CAPTURA (NAO submete): busca no Historico por carteirinha+hoje
+            # e dumpa as linhas cruas da dtLista p/ mapear as colunas.
+            if _diag == "capturar":
+                data_hoje = datetime.now().strftime("%d/%m/%Y")
+                dcap = {}
+                try:
+                    await page.goto(config.URL_HISTORICO_AUTORIZACAO, wait_until="domcontentloaded")
+                    await page.wait_for_timeout(1500)
+                    cart = "".join(filter(str.isdigit, dados["carteirinha"]))
+                    try:
+                        await page.locator("#cphConteudo_txbCodBeneficiario").fill(cart)
+                    except Exception:
+                        pass
+                    for camp in ("#cphConteudo_txbDataInicial", "#cphConteudo_txbDataFinal"):
+                        try:
+                            await page.locator(camp).fill(data_hoje)
+                        except Exception:
+                            pass
+                    try:
+                        await page.locator("#cphConteudo_btnConfirmar").click(force=True, timeout=10000)
+                    except Exception:
+                        pass
+                    for _ in range(20):
+                        await page.wait_for_timeout(1000)
+                        pronto = await page.evaluate(
+                            """() => !((document.body.innerText||'').includes('Carregando...')
+                                      || (document.body.innerText||'').includes('Pesquisando'))""")
+                        if pronto:
+                            break
+                    dcap = await page.evaluate(
+                        """() => {
+                          const t = document.querySelector('#cphConteudo_dtLista')
+                                    || document.querySelector('#dtLista');
+                          if (!t) return {achou_tabela: false};
+                          const head = Array.from(t.querySelectorAll('thead th, thead td'))
+                            .map(c => (c.innerText||'').trim());
+                          const rows = Array.from(t.querySelectorAll('tbody tr')).slice(0, 8)
+                            .map(r => Array.from(r.querySelectorAll('td'))
+                              .map(c => (c.innerText||'').trim()));
+                          return {achou_tabela: true, head, rows, n: rows.length};
+                        }""")
+                except Exception as e:
+                    dcap = {"erro": str(e)}
+                return {"status": "diag_capturar", "numero_protocolo": None,
+                        "evidencias": [], "mensagem": "DIAG capturar (nao submeteu)",
+                        "dump": dcap}
+
             env_res = await clicar_enviar(page)
 
             try:
