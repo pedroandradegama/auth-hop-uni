@@ -663,6 +663,11 @@ async def _fluxo_connecta(dados: dict) -> dict:
                         if (t === 'Enviar' || (e.id || '').toLowerCase().includes('enviar'))
                           out.enviar.push({tag: e.tagName, id: e.id, cls: e.className, txt: t.slice(0, 50)});
                       });
+                      const env = document.querySelector('#ButtonFloat_JSFunction_BtnEnviar_BtnFloat');
+                      out.enviar_html = env ? env.outerHTML : null;
+                      out.enviar_onclick = env ? env.getAttribute('onclick') : null;
+                      const cont = document.querySelector('#ButtonFloat_BtnFloat');
+                      out.container_html = cont ? cont.outerHTML.slice(0, 3000) : null;
                       return out;
                     }"""
                 )
