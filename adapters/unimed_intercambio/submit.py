@@ -692,6 +692,31 @@ async def _fluxo_connecta(dados: dict) -> dict:
                         "evidencias": [], "mensagem": "DIAG nosubmit (nao submeteu)",
                         "dump": dump}
 
+            # Diag do Historico (NAO submete — usa guias ja existentes p/ mapear a
+            # tela onde o protocolo/senha e' capturado pos-envio).
+            if _diag == "historico":
+                dumphist = {}
+                try:
+                    await page.get_by_text("Autorização", exact=True).last.click(timeout=8000)
+                    await page.wait_for_load_state("domcontentloaded")
+                    await page.wait_for_timeout(3500)
+                    dumphist = await page.evaluate(
+                        """() => ({
+                          url: location.href,
+                          campos: Array.from(document.querySelectorAll('input,select'))
+                            .map(e => ({id: e.id, title: e.getAttribute('title'),
+                                        ph: e.placeholder})).filter(c => c.id).slice(0, 70),
+                          tabelas: Array.from(document.querySelectorAll('table'))
+                            .map(t => ({id: t.id, txt: (t.innerText || '').slice(0, 800)})).slice(0, 6),
+                          body: (document.body.innerText || '').slice(0, 3500)
+                        })"""
+                    )
+                except Exception as e:
+                    dumphist = {"erro": str(e)}
+                return {"status": "diag_historico", "numero_protocolo": None,
+                        "evidencias": [], "mensagem": "DIAG historico (nao submeteu)",
+                        "dump": dumphist}
+
             env_res = await clicar_enviar(page)
 
             try:
