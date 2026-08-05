@@ -561,14 +561,22 @@ def _mapear_captura(cap: dict | None) -> dict:
                 "requer_captura_manual": True, "evidencias": [],
                 "mensagem": "Enviado, mas guia nao localizada no Historico. Conferir manual."}
     st = (cap.get("status_guia") or "").strip().lower()
-    base = {"numero_autorizacao": cap.get("autorizacao"),
+    # Contrato acordado com o HOP (Codex 2026-08-04): o HOP grava
+    #   autorizacoes.senha           <- numero_autorizacao (a "Senha" do CONNECTA)
+    #   autorizacoes.numero_protocolo<- numero_guia_operadora (fallback numero_protocolo)
+    # Por isso numero_protocolo carrega a GUIA OPERADORA (nao a senha), e a senha
+    # vai em numero_autorizacao/senha. Validade fica ausente (nao vem na lista;
+    # captura no detalhe e' passo futuro — nunca inferir).
+    base = {"senha": cap.get("autorizacao"),
+            "numero_autorizacao": cap.get("autorizacao"),
             "numero_guia_operadora": cap.get("guia_operadora"),
             "numero_guia_prestador": cap.get("guia_prestador"),
+            "validade": None,
             "evidencias": []}
     if st == "autorizado":
         return {"status": "protocolado",
-                "numero_protocolo": cap.get("autorizacao") or cap.get("guia_operadora"),
-                "mensagem": (f"Autorizado. Senha/autorizacao {cap.get('autorizacao')}, "
+                "numero_protocolo": cap.get("guia_operadora") or cap.get("autorizacao"),
+                "mensagem": (f"Autorizado. Senha {cap.get('autorizacao')}, "
                              f"guia operadora {cap.get('guia_operadora')}."), **base}
     if st.startswith("negad"):
         return {"status": "requer_humano", "numero_protocolo": None,

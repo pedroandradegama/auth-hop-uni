@@ -11,7 +11,10 @@ def test_captura_autorizado_vira_protocolado():
            "data": "04/08/2026"}
     r = _m()._mapear_captura(cap)
     assert r["status"] == "protocolado"
-    assert r["numero_protocolo"] == "192549032"
+    # Contrato HOP: numero_protocolo = guia operadora; senha = nº autorizacao.
+    assert r["numero_protocolo"] == "137873051"
+    assert r["senha"] == "192549032"
+    assert r["numero_autorizacao"] == "192549032"
     assert r["numero_guia_operadora"] == "137873051"
 
 
