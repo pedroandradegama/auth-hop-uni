@@ -83,24 +83,71 @@ async def _snap(page, etapa: str, evidencias: list) -> str:
 
 
 # ── Navegacao ────────────────────────────────────────────────────────────────
-async def _abrir_sp_sadt(page):
-    """Menu Solicitacoes -> card SP/SADT. Falha alto se nao navegar (I2)."""
-    coord = await page.evaluate(
-        """() => {
+async def _coord_texto_exato(page, texto):
+    """Coord do centro do 1o elemento visivel com texto EXATO. None se ausente."""
+    return await page.evaluate(
+        """(txt) => {
           const el = Array.from(document.querySelectorAll('*')).find(e =>
-            e.textContent.trim() === 'Solicitações'
-            && e.getBoundingClientRect().width > 0);
+            e.textContent.trim() === txt
+            && e.getBoundingClientRect().width > 0
+            && e.getBoundingClientRect().height > 0);
           if (!el) return null;
           el.scrollIntoView({block: 'center'});
           const r = el.getBoundingClientRect();
           return {cx: r.x + r.width / 2, cy: r.y + r.height / 2};
-        }"""
+        }""",
+        texto,
     )
-    if not coord:
-        raise SubmitAbortado("Menu 'Solicitações' nao encontrado pos-login.")
-    await page.mouse.click(coord["cx"], coord["cy"])
-    await page.wait_for_load_state("domcontentloaded")
-    await page.wait_for_timeout(1500)
+
+
+async def _esperar_texto_exato(page, texto, timeout_ms=15000, passo_ms=500):
+    """Poll ate o elemento existir (SPA React hidrata assincrono). Coord ou None.
+
+    Causa-raiz mapeada (rpa_agente_execucoes): o portal renderiza os itens de
+    menu antes de anexar os handlers; clicar cedo demais nao registra. Espera-se
+    ate ~15s pela hidratacao antes de desistir.
+    """
+    for _ in range(max(1, timeout_ms // passo_ms)):
+        coord = await _coord_texto_exato(page, texto)
+        if coord:
+            return coord
+        await page.wait_for_timeout(passo_ms)
+    return None
+
+
+async def _sp_sadt_presente(page):
+    return await page.evaluate(
+        """() => Array.from(document.querySelectorAll('h1,h2,h3,h4,h5,h6'))
+             .some(e => e.textContent.trim() === 'SP/SADT')"""
+    )
+
+
+async def _abrir_sp_sadt(page):
+    """Menu Solicitacoes -> card SP/SADT. Robusto a hidratacao async do SPA.
+
+    Espera 'Solicitações' hidratar, clica e CONFIRMA a navegacao (o card
+    'SP/SADT' tem que aparecer). Se o clique nao registrou, re-tenta. Falha
+    alto se nao navegar (I2).
+    """
+    navegou = False
+    for _ in range(3):
+        coord = await _esperar_texto_exato(page, "Solicitações", timeout_ms=15000)
+        if not coord:
+            raise SubmitAbortado("Menu 'Solicitações' nao encontrado pos-login (15s).")
+        await page.mouse.click(coord["cx"], coord["cy"])
+        await page.wait_for_load_state("domcontentloaded")
+        # confirma que o clique surtiu efeito: o card SP/SADT precisa surgir.
+        for _ in range(20):  # ate ~10s
+            if await _sp_sadt_presente(page):
+                navegou = True
+                break
+            await page.wait_for_timeout(500)
+        if navegou:
+            break
+        await page.wait_for_timeout(1000)  # SPA nao reagiu -> re-clica 'Solicitações'
+    if not navegou:
+        raise SubmitAbortado(
+            "Card 'SP/SADT' nao apareceu apos 'Solicitações' (3 tentativas).")
 
     clicou = await page.evaluate(
         """() => {
