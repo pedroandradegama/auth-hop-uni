@@ -28,7 +28,10 @@ Saida: dict no vocabulario do contrato (status in {protocolado, erro_submit}).
 import os
 import re
 from datetime import datetime
-from playwright.async_api import TimeoutError as PlaywrightTimeoutError
+from playwright.async_api import (
+    Error as PlaywrightError,
+    TimeoutError as PlaywrightTimeoutError,
+)
 
 from . import config, codigos as codigos_mod
 from . import sessao
@@ -84,20 +87,27 @@ async def _snap(page, etapa: str, evidencias: list) -> str:
 
 # ── Navegacao ────────────────────────────────────────────────────────────────
 async def _coord_texto_exato(page, texto):
-    """Coord do centro do 1o elemento visivel com texto EXATO. None se ausente."""
-    return await page.evaluate(
-        """(txt) => {
-          const el = Array.from(document.querySelectorAll('*')).find(e =>
-            e.textContent.trim() === txt
-            && e.getBoundingClientRect().width > 0
-            && e.getBoundingClientRect().height > 0);
-          if (!el) return null;
-          el.scrollIntoView({block: 'center'});
-          const r = el.getBoundingClientRect();
-          return {cx: r.x + r.width / 2, cy: r.y + r.height / 2};
-        }""",
-        texto,
-    )
+    """Coord do centro do 1o elemento visivel com texto EXATO. None se ausente.
+
+    Resiliente a "Execution context was destroyed": se um evaluate cai no meio
+    de uma navegacao do SPA, devolve None (o chamador re-tenta no proximo passo).
+    """
+    try:
+        return await page.evaluate(
+            """(txt) => {
+              const el = Array.from(document.querySelectorAll('*')).find(e =>
+                e.textContent.trim() === txt
+                && e.getBoundingClientRect().width > 0
+                && e.getBoundingClientRect().height > 0);
+              if (!el) return null;
+              el.scrollIntoView({block: 'center'});
+              const r = el.getBoundingClientRect();
+              return {cx: r.x + r.width / 2, cy: r.y + r.height / 2};
+            }""",
+            texto,
+        )
+    except PlaywrightError:
+        return None
 
 
 async def _esperar_texto_exato(page, texto, timeout_ms=15000, passo_ms=500):
@@ -116,10 +126,13 @@ async def _esperar_texto_exato(page, texto, timeout_ms=15000, passo_ms=500):
 
 
 async def _sp_sadt_presente(page):
-    return await page.evaluate(
-        """() => Array.from(document.querySelectorAll('h1,h2,h3,h4,h5,h6'))
-             .some(e => e.textContent.trim() === 'SP/SADT')"""
-    )
+    try:
+        return await page.evaluate(
+            """() => Array.from(document.querySelectorAll('h1,h2,h3,h4,h5,h6'))
+                 .some(e => e.textContent.trim() === 'SP/SADT')"""
+        )
+    except PlaywrightError:
+        return False  # contexto destruido por navegacao -> chamador re-tenta
 
 
 async def _abrir_sp_sadt(page):
@@ -149,15 +162,20 @@ async def _abrir_sp_sadt(page):
         raise SubmitAbortado(
             "Card 'SP/SADT' nao apareceu apos 'Solicitações' (3 tentativas).")
 
-    clicou = await page.evaluate(
-        """() => {
-          const h = Array.from(document.querySelectorAll('h1,h2,h3,h4,h5,h6'))
-            .find(e => e.textContent.trim() === 'SP/SADT');
-          if (!h) return false;
-          h.parentElement.click();
-          return true;
-        }"""
-    )
+    try:
+        clicou = await page.evaluate(
+            """() => {
+              const h = Array.from(document.querySelectorAll('h1,h2,h3,h4,h5,h6'))
+                .find(e => e.textContent.trim() === 'SP/SADT');
+              if (!h) return false;
+              h.parentElement.click();
+              return true;
+            }"""
+        )
+    except PlaywrightError:
+        # o click disparou a navegacao e destruiu o contexto no meio do evaluate
+        # -> o click surtiu efeito; segue para o wait_for_load_state abaixo.
+        clicou = True
     if not clicou:
         raise SubmitAbortado("Card 'SP/SADT' nao encontrado.")
     await page.wait_for_load_state("domcontentloaded")
