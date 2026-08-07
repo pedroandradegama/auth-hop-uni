@@ -57,6 +57,18 @@ Depois de qualquer ato **irreversível** (Enviar/submeter), o sistema NUNCA pode
 3. **§2.2 lease + watchdog** — resiliência (a VPS já chama o watchdog; falta lease + lógica).
 4. **§3 coluna `detalhe_fallback` + painel** — acelera o diagnóstico de tudo.
 
+## 6.1 Confirmações do Codex (2026-08-07) — decisões travadas p/ o pacote atômico
+- **RPC rejeita fila incompleta:** p/ Intercâmbio, `fn_autorizacao_enfileirar` faz **`RAISE EXCEPTION`** (não insere `autorizacoes`) se faltar CRM, código TUSS, quantidade válida, ou (CPF **ou** carteira). A UI recebe **erro síncrono** e mantém o formulário p/ correção → a VPS **nunca** vê job malformado. Anexo = **opcional**.
+- **HITL atômico:** o `hitl-resolver` **não pode** persistir a sessão como “encaminhada” **antes** do enfileiramento. Hoje retorna sucesso-com-aviso quando a RPC falha; no pacote vira **falha explícita e consistente** (sessão só marca encaminhada se a RPC inseriu).
+- **`convenio_slug` no SERVIDOR:** resolver de `convenio_id` + `cfg_convenios` no HITL/orquestrador/tela-manual; **nunca confiar no slug da UI** (UI só exibe). Substitui os 3 normalizadores por-nome.
+- **Manter `canal='local'` OFF** até revisão própria (dedupe do callback local, escopo/auth de escalar/worklist, watchdog channel-aware, provisionamento por dispositivo).
+- **Watchdog channel-aware ANTES do cron da VPS:** o `watchdog-autorizacao` genérico hoje pega jobs locais (30min, ignora lease/heartbeat). A VPS já tem o *caller* pronto mas **não habilita o cron** até o watchdog filtrar `canal='vps'` + respeitar `lease_expires_at` + I1.
+
+## 6.2 Consolidação do drift (passo 1 — snapshot read-only)
+Codex preparou a coleta **somente-leitura** do estado vivo (4 RPCs `pg_get_functiondef` + colunas/constraints/índices/RLS/grants de `autorizacoes` e `rpa_agente_execucoes`):
+`analysis/rpa-loop-engineering/01_snapshot_rpas_live.sql` (verificado: sem DDL/DML).
+Fluxo: **rodar no SQL Editor do HOP → exportar todos os result sets → Codex gera a migration de consolidação** (versiona o que existe só no banco/reflexo de tipos). Só depois: migration de CRM + revisão da fila (§1) com validação de contrato no banco.
+
 ## 7. Referências
 - RPCs/edges: `receive-autorizacao`, `proximo-job-autorizacao`, `watchdog-autorizacao`; `fn_autorizacao_registrar_submit`, `fn_autorizacao_enfileirar`, `fn_autorizacao_reconciliar`, `fn_rpa_agente_registrar` (inspecionar via `pg_get_functiondef`).
 - Contrato do callback (VPS→HOP): `status ∈ {protocolado, erro_submit, requer_humano}`, + `requer_captura_manual`, `mensagem`, `numero_protocolo`/`numero_guia_*`, e (no `agent_trace`) `diagnostico`/`patch_sugerido`/`detalhe_fallback`/`motivo_fallback`/`etapa_fallback`.
