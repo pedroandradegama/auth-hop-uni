@@ -85,6 +85,23 @@ async def _snap(page, etapa: str, evidencias: list) -> str:
     return caminho
 
 
+async def _diag(page, etapa: str):
+    """Instrumentacao (best-effort): screenshot em disco + URL no stdout a cada
+    passo inicial do submit. NAO entra no fluxo — serve p/ VER onde/porque o
+    adapter falha cedo (antes do 'pagina1_preenchida'). Nunca levanta."""
+    import contextlib
+    with contextlib.suppress(Exception):
+        os.makedirs(config.SCREENSHOTS_DIR, exist_ok=True)
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        caminho = os.path.join(config.SCREENSHOTS_DIR, f"diag_{etapa}_{ts}.png")
+        await page.screenshot(path=caminho, full_page=True)
+        titulo = ""
+        with contextlib.suppress(Exception):
+            titulo = await page.title()
+        print(f"[diag] {etapa}: url={page.url!r} titulo={titulo!r} -> {caminho}",
+              flush=True)
+
+
 # ── Navegacao ────────────────────────────────────────────────────────────────
 async def _coord_texto_exato(page, texto):
     """Coord do centro do 1o elemento visivel com texto EXATO. None se ausente.
@@ -515,10 +532,21 @@ async def executar(job: dict) -> dict:
 
     try:
         async with sessao.navegador() as page:
-            await sessao.login(page)
-            await _abrir_sp_sadt(page)
-            await _buscar_e_selecionar_paciente(page, cpf)
-            await _preencher_cabecalho(page, job["medico"])
+            # Fase inicial instrumentada: snapshot+URL a cada passo, e um
+            # snapshot no MOMENTO da falha (page ainda viva — o except externo
+            # roda com o browser ja' fechado). So' diagnostico; nao muda o fluxo.
+            try:
+                await sessao.login(page)
+                await _diag(page, "pos_login")
+                await _abrir_sp_sadt(page)
+                await _diag(page, "pos_sp_sadt")
+                await _buscar_e_selecionar_paciente(page, cpf)
+                await _diag(page, "pos_cpf")
+                await _preencher_cabecalho(page, job["medico"])
+                await _diag(page, "pos_cabecalho")
+            except Exception:
+                await _diag(page, "FALHA")
+                raise
 
             # Exames — HARD STOP (I1): TODOS tem que entrar, senao aborta antes
             # de qualquer ato irreversivel (nada de guia parcial).
