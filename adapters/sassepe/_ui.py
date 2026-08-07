@@ -163,25 +163,46 @@ async def selecionar_solicitante(page, crm: str | None, nome: str):
     """
     nome_norm = limpar_nome_medico(nome)
     tokens = [t for t in nome_norm.split() if len(t) >= 2]
-    termo = (str(crm).strip() if crm else nome_norm)
-    if not termo:
-        return "nenhum", []
-    if not await abrir_dropdown(page, "Profissional solicitante", termo):
-        return "nenhum", []
-    opcoes = await page.evaluate(_JS_LISTBOX_OPTIONS)
 
-    candidatos = []
-    for op in opcoes:
-        parte_nome = op.split("-", 1)[1] if "-" in op else op
-        registro = _norm(parte_nome).split()
-        if tokens and all(tok in registro for tok in tokens):
-            candidatos.append(op)
-    candidatos = list(dict.fromkeys(candidatos))
+    # Termos de busca, do mais especifico ao menos. Descoberta (diag_FALHA): o
+    # portal RECUSA o nome completo longo ("SANDRA PAIVA BARBOSA" -> "Nenhum
+    # resultado"). Buscar por menos tokens faz a lista carregar; o token-match
+    # (todos os tokens ⊂ registro) desambigua e mantem o I3 (so' match unico).
+    termos = []
+    if crm and str(crm).strip():
+        termos.append(str(crm).strip())
+    if tokens:
+        termos.append(" ".join(tokens))            # nome completo
+        if len(tokens) >= 2:
+            termos.append(" ".join(tokens[:2]))    # 2 primeiros tokens
+        termos.append(tokens[0])                    # 1o token
+    termos = list(dict.fromkeys(termos))            # dedup, preserva ordem
+    if not termos:
+        return "nenhum", []
 
-    if len(candidatos) != 1:
-        return ("ambiguo" if candidatos else "nenhum"), candidatos
-    ok = await clicar_opcao_listbox(page, candidatos[0])
-    return ("ok" if ok else "nenhum"), candidatos
+    for termo in termos:
+        if not await abrir_dropdown(page, "Profissional solicitante", termo):
+            continue
+        opcoes = await page.evaluate(_JS_LISTBOX_OPTIONS)
+        if not opcoes:
+            continue  # termo nao trouxe lista (ex.: nome completo) -> mais curto
+
+        candidatos = []
+        for op in opcoes:
+            parte_nome = op.split("-", 1)[1] if "-" in op else op
+            registro = _norm(parte_nome).split()
+            if tokens and all(tok in registro for tok in tokens):
+                candidatos.append(op)
+        candidatos = list(dict.fromkeys(candidatos))
+
+        if len(candidatos) == 1:
+            ok = await clicar_opcao_listbox(page, candidatos[0])
+            return ("ok" if ok else "nenhum"), candidatos
+        if len(candidatos) > 1:
+            return "ambiguo", candidatos  # I3: nao escolhe entre homonimos
+        # 0 candidatos com este termo -> tenta o proximo (menos tokens)
+
+    return "nenhum", []
 
 
 async def preencher_cbo(page, indice: int = 0) -> bool:
