@@ -12,7 +12,7 @@ Login via SSO MVOnePass (mudou desde o piloto interativo):
 Em contexto Playwright limpo (sem profile persistente) o login SEMPRE acontece.
 """
 import contextlib
-from playwright.async_api import async_playwright
+from playwright.async_api import async_playwright, Error as PlaywrightError
 
 from . import config
 
@@ -95,27 +95,68 @@ async def _aceitar_termos(page):
     await page.wait_for_timeout(2000)
 
 
-async def _escolher_workspace(page):
-    """Escolhe o card de workspace de prestadores, se a tela aparecer.
-    Ausencia do card nao e' erro (sessao pode ir direto ao painel)."""
+async def _coord_card_workspace(page):
+    """Coord do card de perfil de prestadores (marcadores em config). Resiliente
+    a 'context destroyed' (navegacao em curso) -> None. Seletor tolerante
+    (div/button/a) e dimensoes largas, pois o layout do card varia."""
     m1, m2 = config.WORKSPACE_MARCADORES
-    coord = await page.evaluate(
-        """([m1, m2]) => {
-          const c = Array.from(document.querySelectorAll('div')).find(e => {
-            const r = e.getBoundingClientRect();
-            return r.width > 100 && r.width < 400 && r.height > 100 && r.height < 400
-              && e.textContent.includes(m1) && e.textContent.includes(m2);
-          });
-          if (!c) return null;
-          const r = c.getBoundingClientRect();
-          return {cx: r.x + r.width / 2, cy: r.y + r.height / 2};
-        }""",
-        [m1, m2],
-    )
+    try:
+        return await page.evaluate(
+            """([m1, m2]) => {
+              const c = Array.from(document.querySelectorAll('div,button,a')).find(e => {
+                const r = e.getBoundingClientRect();
+                return r.width > 80 && r.width < 520 && r.height > 60 && r.height < 520
+                  && e.textContent.includes(m1) && e.textContent.includes(m2);
+              });
+              if (!c) return null;
+              c.scrollIntoView({block: 'center'});
+              const r = c.getBoundingClientRect();
+              return {cx: r.x + r.width / 2, cy: r.y + r.height / 2};
+            }""",
+            [m1, m2],
+        )
+    except PlaywrightError:
+        return None
+
+
+async def _escolher_workspace(page):
+    """Escolhe o card de workspace de prestadores.
+
+    Na tela /selecionar-perfil a escolha e' OBRIGATORIA — sem ela o portal nao
+    expoe o menu 'Solicitações' (era a causa-raiz de 'estado_inesperado' na
+    navegacao: o adapter caia aqui sem perfil selecionado). Espera o card
+    hidratar (SPA async), clica e CONFIRMA a saida da tela. Fail loud (I2) se
+    continuar em /selecionar-perfil. Ausencia do card FORA dessa tela nao e'
+    erro (a sessao pode ir direto ao painel)."""
+    coord = None
+    for _ in range(30):  # ~15s p/ o card hidratar
+        coord = await _coord_card_workspace(page)
+        if coord:
+            break
+        if "selecionar-perfil" not in page.url:
+            return  # sessao ja' esta no painel; nao ha perfil a escolher
+        await page.wait_for_timeout(500)
+
     if coord:
         await page.mouse.click(coord["cx"], coord["cy"])
         await page.wait_for_load_state("domcontentloaded")
         await page.wait_for_timeout(2000)
+
+    if "selecionar-perfil" in page.url:
+        # instrumentacao: registra os candidatos p/ diagnose (marcadores mudaram?)
+        with contextlib.suppress(Exception):
+            textos = await page.evaluate(
+                """() => Array.from(document.querySelectorAll('div,button,a'))
+                     .map(e => (e.textContent || '').replace(/\\s+/g, ' ').trim())
+                     .filter(t => t.length > 3 && t.length < 120).slice(0, 40)"""
+            )
+            print("[sassepe] /selecionar-perfil sem card clicavel; "
+                  f"marcadores={config.WORKSPACE_MARCADORES}; candidatos={textos}",
+                  flush=True)
+        raise RuntimeError(
+            "Nao foi possivel escolher o perfil de prestadores em "
+            "/selecionar-perfil (card nao encontrado apos 15s). "
+            f"Marcadores {config.WORKSPACE_MARCADORES} nao casaram.")
 
 
 @contextlib.asynccontextmanager
