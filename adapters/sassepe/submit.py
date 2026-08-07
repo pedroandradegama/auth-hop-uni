@@ -466,25 +466,26 @@ async def _enviar_solicitacao(page, cpf_paciente, evidencias) -> dict:
     except Exception as e:
         raise SubmitAbortado(f"Botao 'Enviar solicitação' nao clicavel: {e}")
 
-    # Espera o envio concluir: sai de /confirmar-dados (a guia foi gerada).
-    try:
-        await page.wait_for_url(
-            lambda url: "confirmar-dados" not in url, timeout=30000
-        )
-    except Exception:
-        pass  # alguns fluxos mostram modal sem trocar URL; seguimos p/ captura
-    await page.wait_for_timeout(2500)
-    await _snap(page, "pos_enviar", evidencias)
-
-    # Captura conservadora do protocolo (I3) VIA HISTORICO, casando por CPF
-    # (exato) + data de hoje. Mais confiavel que raspar a tela de confirmacao
-    # (onde a regex confundia o numero da carteira com o protocolo). Sem
-    # casamento seguro -> numero_protocolo=None + requer_captura_manual.
+    # ⚠️ A guia FOI criada (Enviar clicado = ato irreversivel). A PARTIR DAQUI
+    # nada pode virar erro_submit: um erro pos-envio (ex.: 'context destroyed'
+    # numa navegacao) reportado como falha convida re-submit -> guia DUPLICADA
+    # (I1). Tudo best-effort; o retorno e' SEMPRE 'protocolado' (a varredura
+    # reconcilia o numero depois, se a captura na hora falhar).
     protocolo = None
     try:
+        try:
+            await page.wait_for_url(
+                lambda url: "confirmar-dados" not in url, timeout=30000
+            )
+        except Exception:
+            pass  # alguns fluxos mostram modal sem trocar URL; seguimos p/ captura
+        await page.wait_for_timeout(2500)
+        await _snap(page, "pos_enviar", evidencias)
+        # Captura conservadora do protocolo (I3) VIA HISTORICO, casando por CPF
+        # (exato) + data de hoje. Mais confiavel que raspar a confirmacao.
         protocolo = await varredura.buscar_guia_por_cpf(page, cpf_paciente, data_hoje)
     except Exception:
-        protocolo = None
+        protocolo = None  # guia existe; so' nao capturamos o protocolo agora
 
     if protocolo:
         return {
