@@ -142,7 +142,8 @@ class AgenteFallback:
 
         resultado = ResultadoAgente(
             status=ResultadoStatus.REQUER_HUMANO, job_id=str(job.get("job_id")),
-            motivo_fallback=falha.motivo.value, etapa_fallback=falha.etapa)
+            motivo_fallback=falha.motivo.value, etapa_fallback=falha.etapa,
+            detalhe_fallback=falha.detalhe or "")
 
         passo = 0
         while True:

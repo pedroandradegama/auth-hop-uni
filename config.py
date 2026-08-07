@@ -63,6 +63,13 @@ def worker_inbound_secret() -> str:
     return _req("WORKER_INBOUND_SECRET")
 
 
+# ── Watchdog (reverte reservas expiradas) — edge watchdog-autorizacao ────
+# Chamada periodica por cron (run_watchdog.sh). Auth: mesmo WORKER_INBOUND_SECRET
+# do poll. A LOGICA (lease/tentativas/requer_humano) vive no HOP; a VPS so' aciona.
+def watchdog_url() -> str:
+    return _req("HOP_WATCHDOG_URL")
+
+
 # ── Verificação de senha (Camada 3 do gate): POLL + callback próprios ─────
 # Reusa WORKER_INBOUND_SECRET (poll) e HOP_CALLBACK_SECRET (callback HMAC).
 def proximo_job_verificacao_url() -> str:

@@ -89,6 +89,10 @@ class ResultadoAgente:
     duracao_seg: float = 0.0
     motivo_fallback: str = ""
     etapa_fallback: str = ""
+    # Mensagem CRUA do passo que abortou (FalhaDeterministica.detalhe). O `trace`
+    # so' guarda os passos do agente; sem isto o detalhe do determinístico se
+    # perde (handoff loop-engineering §3). Persistir p/ diagnostico consultavel.
+    detalhe_fallback: str = ""
     trace: list[dict[str, Any]] = field(default_factory=list)
 
     def para_agent_trace(self, org_id: str, convenio: str) -> dict[str, Any]:
@@ -102,6 +106,7 @@ class ResultadoAgente:
             "protocolo": self.protocolo,
             "motivo_fallback": self.motivo_fallback,
             "etapa_fallback": self.etapa_fallback,
+            "detalhe_fallback": self.detalhe_fallback,
             "diagnostico": self.diagnostico,
             "patch_sugerido": self.patch_sugerido,
             "passos": self.passos_executados,
