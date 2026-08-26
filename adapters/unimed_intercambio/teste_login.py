@@ -12,6 +12,7 @@ Esperado: "LOGIN OK" + URL fora de Default.aspx/ErroLogin.
 import asyncio
 import os
 import sys
+from urllib.parse import urlparse
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
@@ -60,7 +61,14 @@ async def main():
 
         print(f"URL apos login: {page.url}")
         print(f"Titulo: {await page.title()}\n")
-        if "ErroLogin" in page.url or "Default.aspx" in page.url:
+        # Compara o PATH, nao substring: a area logada e' /connecta/Content/
+        # Default.aspx, que CONTEM o path de login (/connecta/Default.aspx).
+        def _path(u):
+            return urlparse(u).path.rstrip("/").lower()
+
+        if "errologin" in page.url.lower():
+            print(">>> FALHOU: portal devolveu ErroLogin.")
+        elif _path(page.url) == _path(config.PORTAL_URL):
             print(">>> ATENCAO: ainda na tela de login — FALHOU.")
         else:
             print(">>> LOGIN OK: autenticado e contexto selecionado.")
