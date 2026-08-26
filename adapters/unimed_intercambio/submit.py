@@ -593,6 +593,29 @@ def _mapear_captura(cap: dict | None) -> dict:
             "mensagem": f"Status '{cap.get('status_guia')}' — conferir manual.", **base}
 
 
+async def adicionar_todos_procedimentos(page, codigos, adicionar=None) -> list[str]:
+    """Adiciona TODOS os procedimentos; devolve a lista de erros (vazia = ok).
+
+    HARD STOP (I1) fica no chamador: abortar so' quando TODOS falham deixaria
+    passar guia PARCIAL (3 exames, 1 falha -> envia 2) — e o envio e'
+    IRREVERSIVEL, ninguem percebe que faltou exame. Codigo vazio tambem conta
+    como erro, em vez de "pular calado".
+    """
+    add = adicionar or adicionar_item_procedimento
+    erros: list[str] = []
+    for item in codigos:
+        codigo = str(item.get("codigo", "")).strip()
+        quantidade = item.get("quantidade", 1)
+        if not codigo:
+            erros.append(
+                f"codigo vazio p/ item {item!r} (de-para nao resolveu o TUSS)")
+            continue
+        ok, erro = await add(page, codigo, quantidade)
+        if not ok:
+            erros.append(erro)
+    return erros
+
+
 def _job_para_dados(job: dict) -> dict:
     return {
         "carteirinha": job["carteirinha"],
@@ -739,22 +762,18 @@ async def _fluxo_connecta(dados: dict) -> dict:
 
             await _assentar_pagina(page)
 
-            erros_codigos = []
-            for item in codigos:
-                codigo = str(item.get("codigo", "")).strip()
-                quantidade = item.get("quantidade", 1)
-                if not codigo:
-                    continue
-                ok, erro = await adicionar_item_procedimento(page, codigo, quantidade)
-                if not ok:
-                    erros_codigos.append(erro)
+            # HARD STOP (I1): TODOS os procedimentos tem que entrar, senao a guia
+            # sai PARCIAL (ver adicionar_todos_procedimentos).
+            erros_codigos = await adicionar_todos_procedimentos(page, codigos)
 
-            if erros_codigos and len(erros_codigos) == len(codigos):
-                await _salvar_screenshot_erro(page, "todos_codigos_falharam")
+            if erros_codigos:
+                await _salvar_screenshot_erro(page, "codigo_nao_adicionado")
                 raise FalhaDeterministica(
                     motivo=MotivoFalha.SELETOR_NAO_ACHADO,
                     etapa="adicionar_procedimento",
-                    detalhe=" | ".join(erros_codigos),
+                    detalhe=(f"{len(erros_codigos)}/{len(codigos)} procedimento(s) "
+                             f"nao adicionado(s): " + " | ".join(erros_codigos)
+                             + " (envio abortado para nao gerar guia parcial)."),
                     url=page.url,
                 )
 

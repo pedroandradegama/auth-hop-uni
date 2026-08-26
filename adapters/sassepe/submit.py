@@ -74,6 +74,26 @@ def normalizar_cpf(cpf: str) -> str:
     return digitos
 
 
+# ── Procedimentos (agregacao) ────────────────────────────────────────────────
+def agregar_por_codigo_portal(codigos: list[dict]) -> list[tuple[str, int]]:
+    """Agrupa os exames do job por CODIGO DE PORTAL, somando as quantidades.
+
+    O portal recusa o mesmo codigo duas vezes na guia. No TUSS varios exames
+    compartilham codigo (ex.: US de articulacao e' 1 codigo p/ qualquer
+    articulacao), entao ombro + joelho viram 1 procedimento com quantidade 2.
+    Preserva a ordem de 1a aparicao. Mesmo tratamento ja' validado no SulAmerica.
+    """
+    agregados: dict[str, int] = {}
+    ordem: list[str] = []
+    for item in codigos:
+        codigo_portal = codigos_mod.resolver_codigo_portal(item["codigo_tuss"])
+        qty = int(item.get("quantidade") or item.get("qty") or 1)
+        if codigo_portal not in agregados:
+            ordem.append(codigo_portal)
+        agregados[codigo_portal] = agregados.get(codigo_portal, 0) + qty
+    return [(c, agregados[c]) for c in ordem]
+
+
 # ── Evidencia (I4) ───────────────────────────────────────────────────────────
 async def _snap(page, etapa: str, evidencias: list) -> str:
     os.makedirs(config.SCREENSHOTS_DIR, exist_ok=True)
@@ -551,9 +571,8 @@ async def executar(job: dict) -> dict:
 
             # Exames — HARD STOP (I1): TODOS tem que entrar, senao aborta antes
             # de qualquer ato irreversivel (nada de guia parcial).
-            for item in codigos:
-                codigo_portal = codigos_mod.resolver_codigo_portal(item["codigo_tuss"])
-                qty = int(item.get("quantidade") or item.get("qty") or 1)
+            # DEDUP por codigo de portal (ver agregar_por_codigo_portal).
+            for codigo_portal, qty in agregar_por_codigo_portal(codigos):
                 ok, erro = await _adicionar_exame(page, codigo_portal, qty)
                 if not ok:
                     await _snap(page, "erro_exame", evidencias)
