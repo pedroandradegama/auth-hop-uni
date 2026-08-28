@@ -593,6 +593,42 @@ def _mapear_captura(cap: dict | None) -> dict:
             "mensagem": f"Status '{cap.get('status_guia')}' — conferir manual.", **base}
 
 
+_JS_DISPENSAR_ALERTA = """() => {
+  const vis = (e) => { const r = e.getBoundingClientRect();
+                       return r.width > 0 && r.height > 0; };
+  const botoes = Array.from(
+      document.querySelectorAll('button,input[type=button],input[type=submit],a'))
+    .filter(vis)
+    .filter(b => ((b.innerText || b.value || '').trim().toUpperCase() === 'OK'));
+  for (const b of botoes) {
+    let cur = b, nivel = 0;
+    while (cur && nivel < 8) {
+      const t = (cur.innerText || '').replace(/\\s+/g, ' ').trim();
+      if (/alerta|aviso/i.test(t) && t.length > 10) { b.click(); return t.slice(0, 300); }
+      cur = cur.parentElement; nivel++;
+    }
+  }
+  return null;
+}"""
+
+
+async def dispensar_modal_alerta(page) -> str | None:
+    """Dispensa modal HTML de ALERTA/AVISO (clica OK) e devolve o texto dela.
+
+    O portal abre modal quando a validacao do medico no servico do CFM falha
+    ("Não foi possível efetuar a validação"). A modal cobre a pagina e DESABILITA
+    a secao de procedimentos — o adapter ficava cego (o handler `page.on(dialog)`
+    so' pega dialogo NATIVO, e o tratamento de modal existente e' so' o da
+    biometria, no envio). Mensagem e' de servico indisponivel, nao de medico
+    invalido: dispensa-se e segue, REGISTRANDO o texto p/ auditoria.
+    Devolve None se nao havia modal. Nunca levanta.
+    """
+    try:
+        return await page.evaluate(_JS_DISPENSAR_ALERTA)
+    except Exception:
+        return None
+
+
 async def adicionar_todos_procedimentos(page, codigos, adicionar=None) -> list[str]:
     """Adiciona TODOS os procedimentos; devolve a lista de erros (vazia = ok).
 
@@ -762,9 +798,27 @@ async def _fluxo_connecta(dados: dict) -> dict:
 
             await _assentar_pagina(page)
 
+            # Modal de ALERTA (ex.: validacao do medico via CFM indisponivel)
+            # cobre a pagina e bloqueia a secao de procedimentos. Dispensa e
+            # registra antes de tentar adicionar (ver dispensar_modal_alerta).
+            alertas: list[str] = []
+            alerta = await dispensar_modal_alerta(page)
+            if alerta:
+                alertas.append(alerta)
+                await page.wait_for_timeout(800)
+
             # HARD STOP (I1): TODOS os procedimentos tem que entrar, senao a guia
             # sai PARCIAL (ver adicionar_todos_procedimentos).
             erros_codigos = await adicionar_todos_procedimentos(page, codigos)
+
+            # A modal pode surgir NO MEIO do preenchimento; se algo falhou,
+            # dispensa e re-tenta UMA vez antes de abortar.
+            if erros_codigos:
+                alerta = await dispensar_modal_alerta(page)
+                if alerta:
+                    alertas.append(alerta)
+                    await page.wait_for_timeout(800)
+                    erros_codigos = await adicionar_todos_procedimentos(page, codigos)
 
             if erros_codigos:
                 await _salvar_screenshot_erro(page, "codigo_nao_adicionado")
@@ -974,6 +1028,8 @@ async def _fluxo_connecta(dados: dict) -> dict:
             if os.environ.get("INTERCAMBIO_DIAG", ""):
                 resultado["envio"] = env_res
                 resultado["dialogos"] = dialogos
+                if alertas:
+                    resultado["alertas_portal"] = alertas
                 resultado["cap"] = cap
             return resultado
 
