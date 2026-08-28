@@ -47,7 +47,13 @@ def sa_senha() -> str:
 # Conselho profissional do solicitante: 06 = CRM (medico). UF: 26 = PE.
 # Se um dia entrar solicitante de outro conselho/UF, virar campo do job.
 CONSELHO_SOLICITANTE = "06"   # CRM
-UF_CONSELHO = "26"            # PE
+UF_CONSELHO = "26"            # PE — fallback; a autoridade e' uf_conselho()
+
+
+def uf_conselho(uf_do_job: str | None = None) -> str:
+    """UF (sigla) do conselho: a do job (autoridade) ou o padrao do deploy."""
+    import config as _raiz
+    return _raiz.uf_conselho(uf_do_job)
 
 # CBO do solicitante (clinico/medico) — autocomplete por codigo.
 CBO_SOLICITANTE = "225125"

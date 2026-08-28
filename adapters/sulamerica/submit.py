@@ -127,7 +127,7 @@ async def _selecionar_carater(page, evidencias):
 
 
 # ── Formulario (cabecalho) ───────────────────────────────────────────────────
-async def _preencher_cabecalho(page, crm, nome, evidencias, guia_prestador):
+async def _preencher_cabecalho(page, crm, nome, evidencias, guia_prestador, uf):
     """Preenche o cabecalho do SP/SADT. Retorna o frame_alvo (do formulario).
     `guia_prestador` e' gerado pelo chamador e reusado na captura do protocolo
     (a Consulta casa o protocolo real por este numero)."""
@@ -149,10 +149,11 @@ async def _preencher_cabecalho(page, crm, nome, evidencias, guia_prestador):
     ).fill(nome)
     await page.wait_for_timeout(300)
 
-    # Conselho (06 = CRM) + UF (26 = PE).
+    # Conselho (06 = CRM) + UF do conselho (a do job; padrao do deploy se ausente).
     await frame.locator("#conselho-profissional").select_option(value=config.CONSELHO_SOLICITANTE)
     await page.wait_for_timeout(400)
-    await frame.locator("#uf-conselho-profissional").select_option(value=config.UF_CONSELHO)
+    await _ui.selecionar_uf_conselho(frame, "#uf-conselho-profissional", uf,
+                                     valor_fallback=config.UF_CONSELHO)
     await page.wait_for_timeout(400)
 
     # Numero do conselho (CRM).
@@ -370,6 +371,7 @@ async def executar(job: dict) -> dict:
                 "evidencias": [], "mensagem": str(e)}
 
     crm, nome = _ui.split_medico(job.get("medico") or "")
+    uf_conselho = config.uf_conselho(job.get("crm_uf"))
     if not nome:
         return {"status": "erro_submit", "numero_protocolo": None,
                 "evidencias": [], "mensagem": "Profissional solicitante (medico) ausente."}
@@ -397,7 +399,8 @@ async def executar(job: dict) -> dict:
             await _navegar_para_solicitacao(page)
             await _preencher_carteirinha(page, partes, evidencias)
             await _selecionar_carater(page, evidencias)
-            frame = await _preencher_cabecalho(page, crm, nome, evidencias, guia_prestador)
+            frame = await _preencher_cabecalho(page, crm, nome, evidencias,
+                                               guia_prestador, uf_conselho)
 
             # Procedimentos — HARD STOP (I1): TODOS entram, senao aborta antes
             # de Validar/Confirmar (nada de guia parcial).

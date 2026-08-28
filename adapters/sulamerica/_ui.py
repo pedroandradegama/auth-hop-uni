@@ -57,6 +57,34 @@ def split_carteirinha(carteirinha: str):
     return digitos[0:3], digitos[3:8], digitos[8:12], digitos[12:16], digitos[16:20]
 
 
+# ── UF do conselho ──────────────────────────────────────────────────────────
+async def selecionar_uf_conselho(frame, seletor: str, uf: str,
+                                 valor_fallback: str | None = None) -> None:
+    """Seleciona a UF do conselho casando pelo TEXTO da <option>.
+
+    O portal usa CODIGO no value (26 = PE), nao a sigla. Em vez de embutir a
+    tabela inteira no adapter (chute), lemos as opcoes e casamos a sigla no
+    texto ('PE', '26 - PE', 'PE - Pernambuco'). Mandar a UF errada faz o portal
+    falhar a validacao do medico no CFM. Falha alto (I2) listando as opcoes
+    reais, p/ o formato aparecer no log em vez de virar guia com UF errada.
+    """
+    alvo = (uf or "").strip().upper()
+    opcoes = await frame.locator(seletor).evaluate(
+        "el => Array.from(el.options).map(o => ({value: o.value, text: o.text}))"
+    )
+    for op in opcoes:
+        # sigla como palavra isolada: casa 'PE', '26 - PE', 'PE - Pernambuco'
+        if alvo in re.split(r"[^A-Z]+", (op.get("text") or "").upper()):
+            await frame.locator(seletor).select_option(value=op["value"])
+            return
+    if valor_fallback:
+        await frame.locator(seletor).select_option(value=valor_fallback)
+        return
+    amostra = [o.get("text") for o in opcoes[:8]]
+    raise ValueError(
+        f"UF '{alvo}' nao encontrada no seletor {seletor}. Opcoes: {amostra}")
+
+
 # ── Medico (CRM + nome) ─────────────────────────────────────────────────────
 def split_medico(medico: str):
     """Quebra o `medico` do job em (crm, nome). O portal preenche o NOME num

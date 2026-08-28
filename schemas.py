@@ -79,6 +79,9 @@ class JobPreAutorizacao(BaseModel):
     cpf: str | None = None
     medico: str
     crm: str | None = None  # numero do conselho; exigido pelos adapters que usam
+    # UF do conselho do solicitante. Ausente -> adapter usa config.UF_CONSELHO_PADRAO.
+    # Mandar a UF errada faz o portal falhar a validacao no CFM.
+    crm_uf: str | None = None
     codigos: list[ExameItem] = Field(min_length=1)
     anexos: list[AnexoItem] = Field(
         default_factory=list,
@@ -91,6 +94,14 @@ class JobPreAutorizacao(BaseModel):
         if not (v or "").strip():
             raise ValueError("campo obrigatorio vazio")
         return v.strip()
+
+    @field_validator("crm_uf")
+    @classmethod
+    def _normaliza_uf(cls, v: str | None) -> str | None:
+        """Normaliza p/ sigla de 2 letras maiuscula; lixo vira None (o adapter
+        cai no padrao) em vez de propagar UF invalida ao portal."""
+        u = (v or "").strip().upper()
+        return u if len(u) == 2 and u.isalpha() else None
 
     @field_validator("carteirinha")
     @classmethod

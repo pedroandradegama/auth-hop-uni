@@ -46,7 +46,12 @@ def contexto_prestador() -> str:
 
 # Regras de negocio fixas (validadas 14/07/2026 no bot_connecta.py)
 CONSELHO_PROFISSIONAL_FIXO = "CRM"
-UF_CONSELHO_FIXO = "PE"
+UF_CONSELHO_FIXO = "PE"   # fallback historico; a autoridade e' uf_conselho()
+
+
+def uf_conselho(uf_do_job: str | None = None) -> str:
+    """UF do conselho: a do job (autoridade) ou UF_CONSELHO_PADRAO do deploy."""
+    return _raiz.uf_conselho(uf_do_job)
 CODIGO_CBO_FIXO = "225125 - Médico clínico"
 CARATER_ATENDIMENTO_FIXO = "1-Eletiva"
 TIPO_ITEM_FIXO = "Procedimento"

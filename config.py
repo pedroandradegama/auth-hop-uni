@@ -139,6 +139,21 @@ VARREDURA_JANELA_DIAS = int(os.environ.get("VARREDURA_JANELA_DIAS", "15"))
 BROWSER_ENGINE = "firefox"
 BROWSER_HEADLESS = os.environ.get("BROWSER_HEADLESS", "true").lower() == "true"
 
+# ── Conselho profissional (CRM) ──────────────────────────────────────────
+# UF usada quando o job NAO informa a UF do conselho do solicitante. ~99% dos
+# solicitantes da operacao sao locais, mas CRM de outro estado existe — e mandar
+# a UF errada faz o portal falhar a validacao no CFM (modal de ALERTA que
+# bloqueia o formulario). A autoridade e' o `crm_uf` do job; isto e' so' o
+# fallback do deploy. Multi-tenant: cada instalacao define o seu.
+UF_CONSELHO_PADRAO = (os.environ.get("UF_CONSELHO_PADRAO") or "PE").strip().upper()
+
+
+def uf_conselho(uf_do_job: str | None = None) -> str:
+    """UF do conselho a usar: a do job (autoridade) ou o padrao do deploy."""
+    uf = (uf_do_job or "").strip().upper()
+    return uf if len(uf) == 2 and uf.isalpha() else UF_CONSELHO_PADRAO
+
+
 # ── Diretorios ───────────────────────────────────────────────────────────
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SCREENSHOTS_DIR = os.path.join(BASE_DIR, "Solicitacoes")

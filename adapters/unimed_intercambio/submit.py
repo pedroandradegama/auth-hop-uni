@@ -657,6 +657,8 @@ def _job_para_dados(job: dict) -> dict:
         "carteirinha": job["carteirinha"],
         "medico": job["medico"],
         "crm": job["crm"],
+        # UF do conselho: a do job manda; sem ela, o padrao do deploy.
+        "crm_uf": config.uf_conselho(job.get("crm_uf")),
         "codigo_prestador": job.get("codigo_prestador") or config.CODIGO_PRESTADOR_FIXO,
         "codigos": [
             {"codigo": codigos_mod.resolver_codigo_portal(c["codigo_tuss"]),
@@ -782,7 +784,8 @@ async def _fluxo_connecta(dados: dict) -> dict:
             await _preencher_com_espera(
                 page, lambda: page.locator(f"#{ID_NUMERO_CONSELHO}"), dados["crm"], segundos=6, cliques_fora=1)
             await _selecionar_com_espera(
-                page, lambda: page.get_by_label("UF Conselho:").first, config.UF_CONSELHO_FIXO, segundos=6, cliques_fora=1)
+                page, lambda: page.get_by_label("UF Conselho:").first,
+                dados.get("crm_uf") or config.UF_CONSELHO_FIXO, segundos=6, cliques_fora=1)
             await _selecionar_com_espera(
                 page, lambda: page.get_by_label("Código CBO:").first, config.CODIGO_CBO_FIXO, segundos=6, cliques_fora=1)
             await _selecionar_com_espera(
