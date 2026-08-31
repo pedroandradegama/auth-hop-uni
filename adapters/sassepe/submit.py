@@ -277,7 +277,7 @@ async def _buscar_e_selecionar_paciente(page, cpf: str):
 
 
 # ── Campos fixos da pagina 1 ─────────────────────────────────────────────────
-async def _preencher_cabecalho(page, medico: str):
+async def _preencher_cabecalho(page, medico: str, crm_job: str | None = None):
     """Checkbox + solicitante (variavel) + CBO + executante (fixo) + CBO +
     regime/especialidade/carater/tipo (fixos). Cada passo e' hard stop (I1):
     campo que nao preenche aborta antes de qualquer gravar."""
@@ -286,7 +286,12 @@ async def _preencher_cabecalho(page, medico: str):
     # Profissional SOLICITANTE (variavel: vem do job). Busca por CRM + casa por
     # nome tolerante (acento/sobrenome extra). Conservador (I3): match unico ou
     # aborta para captura manual — CRM repete por UF, chutar = solicitante errado.
+    # O CRM vem em campo PROPRIO do job (`crm`); o texto de `medico` e' so'
+    # fallback. Sem isso o adapter busca pelo nome e homonimos ficam ambiguos
+    # (ex.: "nayara rocha" -> 2 matches), abortando por I3 mesmo com o CRM
+    # disponivel no job.
     crm, nome = _split_medico(medico)
+    crm = (crm_job or "").strip() or crm
     status, candidatos = await _ui.selecionar_solicitante(page, crm, nome)
     if status != "ok":
         if status == "ambiguo":
@@ -563,7 +568,7 @@ async def executar(job: dict) -> dict:
                 await _diag(page, "pos_sp_sadt")
                 await _buscar_e_selecionar_paciente(page, cpf)
                 await _diag(page, "pos_cpf")
-                await _preencher_cabecalho(page, job["medico"])
+                await _preencher_cabecalho(page, job["medico"], job.get("crm"))
                 await _diag(page, "pos_cabecalho")
             except Exception:
                 await _diag(page, "FALHA")

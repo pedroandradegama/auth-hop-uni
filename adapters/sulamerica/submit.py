@@ -370,7 +370,9 @@ async def executar(job: dict) -> dict:
         return {"status": "erro_submit", "numero_protocolo": None,
                 "evidencias": [], "mensagem": str(e)}
 
+    # O CRM vem em campo PROPRIO do job; o texto de `medico` e' so' fallback.
     crm, nome = _ui.split_medico(job.get("medico") or "")
+    crm = (job.get("crm") or "").strip() or crm
     uf_conselho = config.uf_conselho(job.get("crm_uf"))
     if not nome:
         return {"status": "erro_submit", "numero_protocolo": None,
