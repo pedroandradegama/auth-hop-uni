@@ -29,6 +29,31 @@ def _garantir_display_virtual():
     return _display
 
 
+_JS_ERRO_CREDENCIAL = r"""() => {
+  const vis = (e) => { const r = e.getBoundingClientRect();
+                       return r.width > 0 && r.height > 0; };
+  const norm = (t) => (t || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+                        .replace(/\s+/g, ' ').trim().toLowerCase();
+  const alvo = Array.from(document.querySelectorAll('body *'))
+    .filter(vis)
+    .find(e => e.children.length === 0 && /usuario e\/ou senha/.test(norm(e.textContent)));
+  return alvo ? (alvo.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 200) : null;
+}"""
+
+
+async def erro_credencial(page) -> str | None:
+    """Texto do ALERTA de credencial rejeitada, se estiver na tela.
+
+    Sem isso, credencial invalida se disfarcava de problema de portal: o modal
+    de contexto nao aparecia (porque o login nao passou) e o erro reportado era
+    'modal_nao_apareceu', mandando a investigacao para timeout/seletor. Nunca
+    levanta."""
+    try:
+        return await page.evaluate(_JS_ERRO_CREDENCIAL)
+    except Exception:
+        return None
+
+
 async def selecionar_contexto(page, nome_contexto: str) -> tuple:
     """Apos o login, o Connecta sempre abre o modal 'Selecao de Contexto'.
     E preciso setar o valor no <select> real (nao so clicar no item da lista
@@ -129,6 +154,14 @@ async def login(page):
     await page.get_by_role("button", name="entrar").first.evaluate("el => el.click()")
     await page.wait_for_load_state("domcontentloaded")
     await page.wait_for_timeout(1500)
+
+    # Credencial rejeitada tem que falhar com o motivo CERTO — senao o erro
+    # vira 'modal_nao_apareceu' e a investigacao vai para timeout/seletor.
+    alerta = await erro_credencial(page)
+    if alerta:
+        raise RuntimeError(
+            "CONNECTA rejeitou a credencial (verificar UNIMED_CONECTA_USER/PASS "
+            f"e se a conta nao foi bloqueada): {alerta}")
 
     ok, motivo = await selecionar_contexto(page, config.contexto_prestador())
     if not ok:
