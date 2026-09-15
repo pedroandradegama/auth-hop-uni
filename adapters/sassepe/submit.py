@@ -476,8 +476,43 @@ async def _anexar(page, arquivo: str):
     return True, None
 
 
-async def _clicar_proximo(page):
-    """Clica 'Proximo' (reversivel — avanca de pagina, nao gera guia)."""
+# JS: mensagens de validacao visiveis (o portal reprova a pagina 1 sem navegar).
+_JS_ERROS_VISIVEIS = r"""() => {
+  const vis = (e) => { const r = e.getBoundingClientRect();
+                       return r.width > 0 && r.height > 0; };
+  const out = new Set();
+  // (a) elementos de alerta explicitos
+  document.querySelectorAll('[role=alert],[aria-live],.Mui-error,[class*="error"],[class*="erro"]')
+    .forEach(e => { if (vis(e)) { const t = (e.textContent||'').trim();
+                                  if (t && t.length < 200) out.add(t); } });
+  // (b) campos marcados invalidos -> o texto de ajuda logo abaixo
+  document.querySelectorAll('[aria-invalid="true"]').forEach(e => {
+    const cont = e.closest('div');
+    const t = cont ? (cont.textContent||'').trim() : '';
+    if (t && t.length < 200) out.add(t);
+  });
+  return Array.from(out).slice(0, 8);
+}"""
+
+
+async def _erros_visiveis(page) -> list[str]:
+    """Best-effort: nunca levanta (navegacao pode destruir o contexto)."""
+    try:
+        return await page.evaluate(_JS_ERROS_VISIVEIS) or []
+    except PlaywrightError:
+        return []
+
+
+async def _clicar_proximo(page, timeout_ms: int = 15000, passo_ms: int = 500):
+    """Clica 'Proximo' (reversivel — avanca de pagina, nao gera guia) e ESPERA a
+    navegacao para /confirmar-dados.
+
+    O SPA leva um tempo variavel para trocar de rota. A versao anterior esperava
+    2s fixos e o chamador conferia a URL uma unica vez — em 15/09 (job 3d1b8d73)
+    isso produziu "Esperava a tela de resumo, URL atual: .../sp-sadt" sem dizer
+    se a pagina fora reprovada por validacao ou se so' estava lenta. Agora
+    poll ate' 15s e, se nao avancar, o motivo vai junto.
+    """
     coord = await page.evaluate(
         """() => {
           const el = Array.from(document.querySelectorAll('button')).find(e =>
@@ -492,8 +527,24 @@ async def _clicar_proximo(page):
     if not coord:
         raise SubmitAbortado("Botao 'Próximo' nao encontrado apos preencher pagina 1.")
     await page.mouse.click(coord["cx"], coord["cy"])
-    await page.wait_for_load_state("domcontentloaded")
-    await page.wait_for_timeout(2000)
+
+    for _ in range(max(1, timeout_ms // passo_ms)):
+        if "confirmar-dados" in page.url:
+            await page.wait_for_timeout(500)   # deixa a tela de resumo montar
+            return
+        await page.wait_for_timeout(passo_ms)
+
+    # Nao avancou: a pagina 1 foi reprovada, ou o clique nao registrou. A
+    # mensagem do portal e' o que distingue os dois — sem ela, so' sobra a URL.
+    erros = await _erros_visiveis(page)
+    if erros:
+        raise SubmitAbortado(
+            "Pagina 1 nao avancou apos 'Próximo' — o portal reprovou: "
+            + " | ".join(erros))
+    raise SubmitAbortado(
+        f"Pagina 1 nao avancou apos 'Próximo' em {timeout_ms // 1000}s e o portal "
+        f"nao exibiu mensagem de validacao (URL segue {page.url}). Possivel "
+        f"clique nao registrado ou campo obrigatorio sem aviso visivel.")
 
 
 async def _enviar_solicitacao(page, cpf_paciente, evidencias) -> dict:
