@@ -17,13 +17,63 @@ para Playwright preservando o metodo exato que funcionou:
 Inputs React: NUNCA setar input.value via JS (nao dispara o estado). Sempre
 clicar + digitar pelo teclado (page.keyboard), como aqui.
 """
+import difflib
 import unicodedata
+
+# Tolerancia a erro de grafia no nome do medico (ver casa_tokens). 0.82 aceita
+# letra transposta e troca de uma letra em sobrenome de tamanho normal, e recusa
+# sobrenomes genuinamente diferentes:
+#   CALVACANTI x CAVALCANTI = 0.90  (transposicao — aceita)
+#   MACEDO     x MACHADO    = 0.77  (pessoas diferentes — recusa)
+LIMIAR_FUZZY = 0.82
+
+# Abaixo disto, exigimos casamento EXATO. Token curto tem pouca informacao e
+# fuzzy nele casa quase tudo ("LUZ" x "CRUZ" = 0.86).
+MIN_TOKEN_FUZZY = 5
 
 
 def _norm(s: str) -> str:
     """Maiuscula, sem acento, espacos colapsados (para casar nomes)."""
     s = unicodedata.normalize("NFKD", s or "").encode("ascii", "ignore").decode()
     return " ".join(s.upper().split())
+
+
+def _token_casa(tok: str, registro: list[str], limiar: float) -> bool:
+    """Um token do nome buscado esta' presente no registro do portal?
+
+    Exato sempre vale. Com limiar < 1.0, aceita tambem o token mais parecido
+    acima do limiar — desde que seja longo o bastante (MIN_TOKEN_FUZZY).
+    """
+    if tok in registro:
+        return True
+    if limiar >= 1.0 or len(tok) < MIN_TOKEN_FUZZY:
+        return False
+    return any(
+        len(r) >= MIN_TOKEN_FUZZY
+        and difflib.SequenceMatcher(None, tok, r).ratio() >= limiar
+        for r in registro
+    )
+
+
+def casa_tokens(tokens: list[str], registro: list[str], limiar: float = 1.0) -> bool:
+    """TODOS os tokens buscados tem que estar no registro (I3 continua valendo:
+    quem decide entre homonimos e' a unicidade do candidato, nao esta funcao).
+
+    Funcao pura — testavel sem browser (tests/test_solicitante_fuzzy.py).
+    """
+    return bool(tokens) and all(_token_casa(t, registro, limiar) for t in tokens)
+
+
+def filtrar_candidatos(opcoes: list[str], tokens: list[str],
+                       limiar: float = 1.0) -> list[str]:
+    """Das opcoes do listbox ('CRM - NOME'), quais casam com os tokens buscados.
+    Preserva a ordem e remove repetidas. Funcao pura."""
+    achados = []
+    for op in opcoes:
+        parte_nome = op.split("-", 1)[1] if "-" in op else op
+        if casa_tokens(tokens, _norm(parte_nome).split(), limiar):
+            achados.append(op)
+    return list(dict.fromkeys(achados))
 
 
 def limpar_nome_medico(nome: str) -> str:
@@ -187,13 +237,14 @@ async def selecionar_solicitante(page, crm: str | None, nome: str):
         if not opcoes:
             continue  # termo nao trouxe lista (ex.: nome completo) -> mais curto
 
-        candidatos = []
-        for op in opcoes:
-            parte_nome = op.split("-", 1)[1] if "-" in op else op
-            registro = _norm(parte_nome).split()
-            if tokens and all(tok in registro for tok in tokens):
-                candidatos.append(op)
-        candidatos = list(dict.fromkeys(candidatos))
+        # 1a passada EXATA. Se nada casar, 2a passada tolerante a grafia: o nome
+        # vem de OCR de pedido manuscrito e erra letra com frequencia. Caso real
+        # (14/09, job 37e3d344): o job trazia 'Waldete calvacanti' e o portal
+        # tinha '2644 - WALDETE AMARAL PEREIRA CAVALCANTI' — o portal ACHOU o
+        # medico pelo CRM e nos e' que recusamos, por uma transposicao de letras.
+        candidatos = filtrar_candidatos(opcoes, tokens)
+        if not candidatos:
+            candidatos = filtrar_candidatos(opcoes, tokens, LIMIAR_FUZZY)
 
         if len(candidatos) == 1:
             ok = await clicar_opcao_listbox(page, candidatos[0])
