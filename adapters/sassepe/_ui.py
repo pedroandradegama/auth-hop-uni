@@ -260,28 +260,81 @@ async def selecionar_solicitante(page, crm: str | None, nome: str):
     return "nenhum", []
 
 
-async def preencher_cbo(page, indice: int = 0) -> bool:
+# JS: valor do input que fica logo ABAIXO do N-esimo label com este texto.
+# Serve para CONFERIR que um dropdown realmente gravou — clicar nao e' prova.
+_JS_VALOR_ABAIXO_DO_LABEL = """
+([label_text, indice]) => {
+  const labels = Array.from(document.querySelectorAll('*')).filter(e => {
+    const t = e.textContent.trim();
+    return (t === label_text + '*' || t === label_text)
+      && e.getBoundingClientRect().width > 0;
+  });
+  const label = labels[indice];
+  if (!label) return null;
+  const lr = label.getBoundingClientRect();
+  let melhor = null, menor = 1e9;
+  document.querySelectorAll('input').forEach(inp => {
+    const r = inp.getBoundingClientRect();
+    if (r.width <= 0) return;
+    const dy = r.top - lr.top;
+    if (dy < 0 || dy > 80) return;          // logo abaixo do label
+    const dx = Math.abs(r.left - lr.left);
+    if (dx > 300) return;                    // mesma coluna
+    if (dy + dx < menor) { menor = dy + dx; melhor = inp; }
+  });
+  return melhor ? (melhor.value || '').trim() : null;
+}
+"""
+
+# JS: 1a opcao REAL do listbox (ignora o placeholder de lista vazia).
+_JS_PRIMEIRA_OPCAO = """
+() => {
+  const lb = document.querySelector('[role=listbox]');
+  if (!lb || !lb.children.length) return null;
+  const el = lb.children[0];
+  const t = (el.textContent || '').trim();
+  if (/^nenhum resultado/i.test(t)) return null;   // estado vazio, nao opcao
+  el.scrollIntoView({block: 'nearest'});
+  const r = el.getBoundingClientRect();
+  return {cx: r.x + r.width / 2, cy: r.y + r.height / 2, texto: t};
+}
+"""
+
+
+async def valor_do_campo(page, label_text: str, indice: int = 0) -> str:
+    """Valor atual do dropdown sob o N-esimo `label_text`. '' se vazio/ausente."""
+    try:
+        return (await page.evaluate(_JS_VALOR_ABAIXO_DO_LABEL,
+                                    [label_text, indice])) or ""
+    except Exception:
+        return ""
+
+
+async def preencher_cbo(page, indice: int = 0, tentativas: int = 3) -> bool:
     """CBO 999999: unica opcao apos abrir; clica o 1o item do listbox.
     `indice` escolhe a secao: 0 = Contratado solicitante, 1 = executante (ha'
-    DUAS labels 'Código CBO' identicas na pagina)."""
+    DUAS labels 'Código CBO' identicas na pagina).
+
+    CONFERE que o campo ficou preenchido antes de dizer que deu certo. Clicar nao
+    e' prova: em 15/09 (job 3d1b8d73) o CBO do executante ficou VAZIO e esta
+    funcao devolveu True, entao o adapter seguiu e so' descobriu o problema no
+    'Próximo', que o portal reprovou sem mensagem util. O CBO do executante so'
+    popula DEPOIS que o profissional e' selecionado — se a lista ainda nao
+    carregou, o clique cai no vazio.
+    """
     from . import config
-    if not await abrir_dropdown(page, "Código CBO", config.CBO_SEARCH, indice=indice):
-        return False
-    coord = await page.evaluate(
-        """() => {
-          const lb = document.querySelector('[role=listbox]');
-          if (!lb || !lb.children.length) return null;
-          const el = lb.children[0];
-          el.scrollIntoView({block: 'nearest'});
-          const r = el.getBoundingClientRect();
-          return {cx: r.x + r.width / 2, cy: r.y + r.height / 2};
-        }"""
-    )
-    if not coord:
-        return False
-    await page.mouse.click(coord["cx"], coord["cy"])
-    await page.wait_for_timeout(800)
-    return True
+    for _ in range(max(1, tentativas)):
+        if not await abrir_dropdown(page, "Código CBO", config.CBO_SEARCH,
+                                    indice=indice):
+            return False
+        coord = await page.evaluate(_JS_PRIMEIRA_OPCAO)
+        if coord:
+            await page.mouse.click(coord["cx"], coord["cy"])
+            await page.wait_for_timeout(800)
+            if await valor_do_campo(page, "Código CBO", indice):
+                return True
+        await page.wait_for_timeout(700)   # da' tempo da lista carregar e re-tenta
+    return False
 
 
 async def marcar_paciente_no_local(page) -> bool:
