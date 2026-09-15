@@ -301,13 +301,22 @@ _JS_PRIMEIRA_OPCAO = """
 """
 
 
-async def valor_do_campo(page, label_text: str, indice: int = 0) -> str:
-    """Valor atual do dropdown sob o N-esimo `label_text`. '' se vazio/ausente."""
+async def valor_do_campo(page, label_text: str, indice: int = 0):
+    """Valor atual do dropdown sob o N-esimo `label_text`.
+
+    Tres retornos DISTINTOS, e a distincao importa:
+      "texto"  -> campo preenchido
+      ""       -> campo localizado e VAZIO
+      None     -> NAO consegui ler (input nao localizado, contexto destruido)
+
+    Confundir None com "" transforma uma limitacao da leitura em veredito de
+    campo vazio — e reprova preenchimento que deu certo.
+    """
     try:
-        return (await page.evaluate(_JS_VALOR_ABAIXO_DO_LABEL,
-                                    [label_text, indice])) or ""
+        v = await page.evaluate(_JS_VALOR_ABAIXO_DO_LABEL, [label_text, indice])
     except Exception:
-        return ""
+        return None
+    return None if v is None else str(v).strip()
 
 
 async def preencher_cbo(page, indice: int = 0, tentativas: int = 3) -> bool:
@@ -326,12 +335,17 @@ async def preencher_cbo(page, indice: int = 0, tentativas: int = 3) -> bool:
     for _ in range(max(1, tentativas)):
         if not await abrir_dropdown(page, "Código CBO", config.CBO_SEARCH,
                                     indice=indice):
-            return False
+            await page.wait_for_timeout(700)
+            continue   # label ainda nao renderizou; re-tenta em vez de desistir
         coord = await page.evaluate(_JS_PRIMEIRA_OPCAO)
         if coord:
             await page.mouse.click(coord["cx"], coord["cy"])
             await page.wait_for_timeout(800)
-            if await valor_do_campo(page, "Código CBO", indice):
+            valor = await valor_do_campo(page, "Código CBO", indice)
+            # None = nao consegui conferir. O clique aconteceu numa opcao real
+            # (o placeholder ja' foi descartado), entao aceita — nao inventa
+            # falha a partir de limitacao da leitura.
+            if valor is None or valor:
                 return True
         await page.wait_for_timeout(700)   # da' tempo da lista carregar e re-tenta
     return False

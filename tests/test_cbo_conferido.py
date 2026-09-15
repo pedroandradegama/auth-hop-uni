@@ -87,7 +87,40 @@ async def test_placeholder_nao_e_clicado():
 
 
 @pytest.mark.asyncio
-async def test_valor_do_campo_sem_erro_quando_a_pagina_reclama():
+async def test_nao_consegui_ler_e_diferente_de_vazio():
+    """None = limitacao da leitura; "" = campo localizado e vazio. Confundir os
+    dois transforma falha de leitura em veredito de campo vazio."""
     class _Explode:
         async def evaluate(self, *a): raise RuntimeError("contexto destruido")
-    assert await _ui.valor_do_campo(_Explode(), "Código CBO", 1) == ""
+    assert await _ui.valor_do_campo(_Explode(), "Código CBO", 1) is None
+
+
+@pytest.mark.asyncio
+async def test_leitura_impossivel_nao_reprova_o_preenchimento():
+    """Regressao real: a 1a versao da conferencia devolvia "" quando nao achava
+    o input e reprovava CBO que havia preenchido — o job 5944605d passou a
+    falhar em "CBO (solicitante) nao preenchido" logo depois do deploy, num
+    campo que vinha funcionando."""
+    page = _PageFake()
+    page.valor = None                      # input nao localizado pela geometria
+    assert await _ui.preencher_cbo(page, indice=0) is True
+    assert page.cliques_opcao == 1
+
+
+@pytest.mark.asyncio
+async def test_label_ainda_nao_renderizado_e_re_tentado():
+    """Bailar na 1a falha do label anulava o retry."""
+    class _PageLabelLento(_PageFake):
+        def __init__(self):
+            super().__init__()
+            self.buscas_label = 0
+
+        async def evaluate(self, js, *a):
+            if "label.scrollIntoView" in js:
+                self.buscas_label += 1
+                return self.buscas_label >= 2     # so' aparece na 2a
+            return await super().evaluate(js, *a)
+
+    page = _PageLabelLento()
+    assert await _ui.preencher_cbo(page, indice=1) is True
+    assert page.buscas_label == 2
