@@ -344,7 +344,22 @@ async def _adicionar_exame(page, codigo: str, qty: int):
     if not await _ui.preencher_dropdown(
         page, "Código e descrição do procedimento ou item", codigo, codigo
     ):
-        return False, f"Codigo '{codigo}' nao encontrado no portal."
+        # Diagnostico: "nao encontrado" tem duas causas MUITO diferentes e o
+        # detalhe precisa distinguir, senao o agente inventa uma terceira (em
+        # 15/09 ele concluiu "a rota do portal mudou" — falso; o robo ja estava
+        # no formulario e so' este codigo falhou).
+        #   listbox VAZIO  -> o portal buscou e nao tem o codigo na tabela 22
+        #   listbox CHEIO  -> o codigo existe mas o texto da opcao nao casou
+        try:
+            opcoes = await page.evaluate(_ui._JS_LISTBOX_OPTIONS)
+        except Exception:
+            opcoes = None
+        if opcoes:
+            amostra = "; ".join(opcoes[:5])
+            return False, (f"Codigo '{codigo}' nao casou com nenhuma opcao. "
+                           f"Portal ofereceu {len(opcoes)}: {amostra}")
+        return False, (f"Codigo '{codigo}' nao encontrado no portal "
+                       f"(tabela {config.TABELA_NUM}, listbox vazio).")
     await page.wait_for_timeout(500)
 
     # Quantidade: botao '+' e' SVG sem texto. Acha por geometria (canto direito,
