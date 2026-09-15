@@ -596,6 +596,21 @@ async def executar(job: dict) -> dict:
                 ok, erro = await _adicionar_exame(page, codigo_portal, qty)
                 if not ok:
                     await _snap(page, "erro_exame", evidencias)
+                    if "listbox vazio" in erro:
+                        # O portal buscou e NAO tem o codigo. Nao e' layout
+                        # quebrado: e' o convenio nao oferecendo o procedimento.
+                        # Vai direto para revisao humana, sem agente (que aqui
+                        # so' gastaria token e inventaria causa — 14 e 15/09).
+                        raise FalhaDeterministica(
+                            motivo=MotivoFalha.PROCEDIMENTO_INDISPONIVEL,
+                            etapa="submit_sassepe",
+                            detalhe=(f"Convenio nao oferece o procedimento "
+                                     f"{codigo_portal} na tabela "
+                                     f"{config.TABELA_NUM} do portal. Revisar o "
+                                     f"codigo do exame ou autorizar por outro "
+                                     f"canal."),
+                            url=page.url,
+                        )
                     raise SubmitAbortado(f"Exame nao adicionado: {erro}")
 
             # Anexos — HARD STOP (I1): TODOS tem que confirmar.

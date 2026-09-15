@@ -189,9 +189,13 @@ _JS_LISTBOX_OPTIONS = """
   let els = Array.from(lb.querySelectorAll('[role=option]'));
   if (!els.length) els = Array.from(lb.children);
   const seen = new Set(); const out = [];
+  // 'Nenhum resultado' e' o estado VAZIO do portal renderizado dentro do
+  // listbox — contar como opcao faz o erro dizer "portal ofereceu 1 opcao:
+  // Nenhum resultado", que e' o oposto do que aconteceu.
+  const vazio = (t) => /^nenhum resultado/i.test(t);
   for (const e of els) {
     const t = (e.textContent || '').trim();
-    if (t.length > 2 && !seen.has(t)) { seen.add(t); out.push(t); }
+    if (t.length > 2 && !vazio(t) && !seen.has(t)) { seen.add(t); out.push(t); }
   }
   return out;
 }

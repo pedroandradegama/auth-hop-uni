@@ -28,7 +28,8 @@ import httpx
 import config
 import callback
 from schemas import JobPreAutorizacao
-from agente import (AgenteFallback, MOTIVOS_AGENTE, ContextoSeguranca,
+from agente import (AgenteFallback, MOTIVOS_AGENTE, MOTIVOS_REQUER_HUMANO,
+                    ContextoSeguranca,
                     FalhaDeterministica, ResultadoAgente, ResultadoStatus)
 import importlib
 
@@ -166,6 +167,14 @@ async def _processar(job: JobPreAutorizacao):
                                      "requer_captura_manual": True, "evidencias": [],
                                      "mensagem": f"Falha determ.: {falha}; "
                                                  f"agente abortou: {e}"}
+                elif falha.motivo in MOTIVOS_REQUER_HUMANO:
+                    # Nao e' erro tecnico: e' decisao que so' uma pessoa toma
+                    # (trocar o codigo, tirar o exame do pedido, autorizar por
+                    # outro canal). Marcar como erro_submit mandaria o operador
+                    # procurar defeito onde nao ha'.
+                    resultado = {"status": "requer_humano", "numero_protocolo": None,
+                                 "requer_captura_manual": True, "evidencias": [],
+                                 "mensagem": f"{falha.detalhe or falha}"}
                 else:
                     resultado = {"status": "erro_submit", "numero_protocolo": None,
                                  "evidencias": [],

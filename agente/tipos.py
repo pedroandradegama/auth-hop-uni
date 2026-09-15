@@ -18,6 +18,13 @@ class MotivoFalha(str, Enum):
     SESSAO_EXPIRADA = "sessao_expirada"   # NÃO ativa agente: re-login + retry 1x
     REDE = "rede"                          # NÃO ativa agente: backoff determinístico
     WAF_CAPTCHA = "waf_captcha"            # NÃO ativa agente: requer_humano direto
+    # O portal NÃO oferece o código: condição de negócio determinística
+    # (convênio não cobre / não tem o procedimento na tabela contratada),
+    # não é layout quebrado. Acionar o agente aqui só gasta token e produz
+    # diagnóstico inventado — medido 3x entre 14 e 15/09/2026, quando ele
+    # concluiu "a rota do portal mudou" para um robô que já estava dentro
+    # do formulário.
+    PROCEDIMENTO_INDISPONIVEL = "procedimento_indisponivel"
 
 
 # Motivos que justificam acionar o loop de agente (custo de token > 0).
@@ -25,6 +32,15 @@ MOTIVOS_AGENTE = {
     MotivoFalha.SELETOR_NAO_ACHADO,
     MotivoFalha.ESTADO_INESPERADO,
     MotivoFalha.VALIDACAO_PORTAL,
+}
+
+# Motivos que exigem decisão de uma pessoa e NÃO são erro técnico: o job vai
+# para a fila de revisão humana, não para `erro_submit`. Sem isto, o operador
+# recebe "erro" para uma situação que só ele pode resolver (trocar o código,
+# remover o exame do pedido ou autorizar por outro canal).
+MOTIVOS_REQUER_HUMANO = {
+    MotivoFalha.WAF_CAPTCHA,
+    MotivoFalha.PROCEDIMENTO_INDISPONIVEL,
 }
 
 
