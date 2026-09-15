@@ -40,6 +40,14 @@ from . import varredura
 from agente import FalhaDeterministica, MotivoFalha
 
 
+class _UrlNaFalha(Exception):
+    """Carrega a URL viva ate' o handler externo (o browser ja' fechou la')."""
+
+    def __init__(self, url: str) -> None:
+        super().__init__(url)
+        self.url = url
+
+
 class SubmitAbortado(Exception):
     """Pre-condicao dura (I1) falhou. O ato irreversivel NAO deve acontecer."""
 
@@ -573,60 +581,73 @@ async def executar(job: dict) -> dict:
 
     try:
         async with sessao.navegador() as page:
-            # Fase inicial instrumentada: snapshot+URL a cada passo, e um
-            # snapshot no MOMENTO da falha (page ainda viva — o except externo
-            # roda com o browser ja' fechado). So' diagnostico; nao muda o fluxo.
-            try:
-                await sessao.login(page)
-                await _diag(page, "pos_login")
-                await _abrir_sp_sadt(page)
-                await _diag(page, "pos_sp_sadt")
-                await _buscar_e_selecionar_paciente(page, cpf)
-                await _diag(page, "pos_cpf")
-                await _preencher_cabecalho(page, job["medico"], job.get("crm"))
-                await _diag(page, "pos_cabecalho")
-            except Exception:
-                await _diag(page, "FALHA")
-                raise
+          try:
+              # Fase inicial instrumentada: snapshot+URL a cada passo, e um
+              # snapshot no MOMENTO da falha (page ainda viva — o except externo
+              # roda com o browser ja' fechado). So' diagnostico; nao muda o fluxo.
+              try:
+                  await sessao.login(page)
+                  await _diag(page, "pos_login")
+                  await _abrir_sp_sadt(page)
+                  await _diag(page, "pos_sp_sadt")
+                  await _buscar_e_selecionar_paciente(page, cpf)
+                  await _diag(page, "pos_cpf")
+                  await _preencher_cabecalho(page, job["medico"], job.get("crm"))
+                  await _diag(page, "pos_cabecalho")
+              except Exception:
+                  await _diag(page, "FALHA")
+                  raise
 
-            # Exames — HARD STOP (I1): TODOS tem que entrar, senao aborta antes
-            # de qualquer ato irreversivel (nada de guia parcial).
-            # DEDUP por codigo de portal (ver agregar_por_codigo_portal).
-            for codigo_portal, qty in agregar_por_codigo_portal(codigos):
-                ok, erro = await _adicionar_exame(page, codigo_portal, qty)
-                if not ok:
-                    await _snap(page, "erro_exame", evidencias)
-                    if "listbox vazio" in erro:
-                        # O portal buscou e NAO tem o codigo. Nao e' layout
-                        # quebrado: e' o convenio nao oferecendo o procedimento.
-                        # Vai direto para revisao humana, sem agente (que aqui
-                        # so' gastaria token e inventaria causa — 14 e 15/09).
-                        raise FalhaDeterministica(
-                            motivo=MotivoFalha.PROCEDIMENTO_INDISPONIVEL,
-                            etapa="submit_sassepe",
-                            detalhe=(f"Convenio nao oferece o procedimento "
-                                     f"{codigo_portal} na tabela "
-                                     f"{config.TABELA_NUM} do portal. Revisar o "
-                                     f"codigo do exame ou autorizar por outro "
-                                     f"canal."),
-                            url=page.url,
-                        )
-                    raise SubmitAbortado(f"Exame nao adicionado: {erro}")
+              # Exames — HARD STOP (I1): TODOS tem que entrar, senao aborta antes
+              # de qualquer ato irreversivel (nada de guia parcial).
+              # DEDUP por codigo de portal (ver agregar_por_codigo_portal).
+              for codigo_portal, qty in agregar_por_codigo_portal(codigos):
+                  ok, erro = await _adicionar_exame(page, codigo_portal, qty)
+                  if not ok:
+                      await _snap(page, "erro_exame", evidencias)
+                      if "listbox vazio" in erro:
+                          # O portal buscou e NAO tem o codigo. Nao e' layout
+                          # quebrado: e' o convenio nao oferecendo o procedimento.
+                          # Vai direto para revisao humana, sem agente (que aqui
+                          # so' gastaria token e inventaria causa — 14 e 15/09).
+                          raise FalhaDeterministica(
+                              motivo=MotivoFalha.PROCEDIMENTO_INDISPONIVEL,
+                              etapa="submit_sassepe",
+                              detalhe=(f"Convenio nao oferece o procedimento "
+                                       f"{codigo_portal} na tabela "
+                                       f"{config.TABELA_NUM} do portal. Revisar o "
+                                       f"codigo do exame ou autorizar por outro "
+                                       f"canal."),
+                              url=page.url,
+                          )
+                      raise SubmitAbortado(f"Exame nao adicionado: {erro}")
 
-            # Anexos — HARD STOP (I1): TODOS tem que confirmar.
-            for arquivo in arquivos:
-                ok, erro = await _anexar(page, arquivo)
-                if not ok:
-                    await _snap(page, "erro_anexo", evidencias)
-                    raise SubmitAbortado(f"Anexo nao confirmado: {erro}")
+              # Anexos — HARD STOP (I1): TODOS tem que confirmar.
+              for arquivo in arquivos:
+                  ok, erro = await _anexar(page, arquivo)
+                  if not ok:
+                      await _snap(page, "erro_anexo", evidencias)
+                      raise SubmitAbortado(f"Anexo nao confirmado: {erro}")
 
-            await _snap(page, "pagina1_preenchida", evidencias)
-            await _clicar_proximo(page)
-            await _snap(page, "pos_proximo", evidencias)
+              await _snap(page, "pagina1_preenchida", evidencias)
+              await _clicar_proximo(page)
+              await _snap(page, "pos_proximo", evidencias)
 
-            # Tela de resumo (/confirmar-dados) -> Enviar (irreversivel) + protocolo.
-            return await _enviar_solicitacao(page, cpf, evidencias)
+              # Tela de resumo (/confirmar-dados) -> Enviar (irreversivel) + protocolo.
+              return await _enviar_solicitacao(page, cpf, evidencias)
+          except SubmitAbortado as e:
+            raise _UrlNaFalha(page.url) from e
 
+    except _UrlNaFalha as e:
+        # A URL viva no momento da falha. Sem ela o agente nao sabe ONDE o robo
+        # estava e chuta — em 14 e 15/09 concluiu "a rota do portal mudou" com o
+        # robo ja' dentro do formulario.
+        raise FalhaDeterministica(
+            motivo=MotivoFalha.ESTADO_INESPERADO,
+            etapa="submit_sassepe",
+            detalhe=str(e.__cause__ or e),
+            url=e.url,
+        ) from e.__cause__
     except FalhaDeterministica:
         raise  # ja classificado por um passo interno (defesa; hoje nao ocorre)
     except SubmitAbortado as e:
