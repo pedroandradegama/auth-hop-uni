@@ -6,9 +6,31 @@ extraíam o CRM do texto de `medico`, descartavam o campo `crm`, buscavam por
 nome e abortavam por ambiguidade (I3) — com o CRM disponível no job o tempo
 todo. Só o intercâmbio lia `job["crm"]`.
 """
+import contextlib
 import importlib
 
 import pytest
+
+from agente import FalhaDeterministica
+
+
+class _FakePage:
+    url = "https://portal.test/x"
+
+
+def _fake_navegador():
+    """Isola o teste do portal real. Sem isto, `executar` abre browser de verdade
+    e, numa maquina COM credenciais (a VPS), loga no portal e navega — o teste
+    vira integracao ao vivo, flaky e com trafego real. Mesmo padrao de
+    tests/test_costura_a_sassepe_sulamerica.py."""
+    @contextlib.asynccontextmanager
+    async def _nav():
+        yield _FakePage()
+    return _nav
+
+
+async def _noop_login(page):
+    return None
 
 
 def _sassepe():
@@ -58,14 +80,27 @@ def test_sem_crm_em_lugar_nenhum_fica_none():
 
 # ── SulAmérica exige CRM: com o campo do job, passa o pré-flight ──────────
 @pytest.mark.asyncio
-async def test_sulamerica_aceita_crm_do_campo_do_job():
+async def test_sulamerica_aceita_crm_do_campo_do_job(monkeypatch):
+    """Com o CRM no campo próprio, o pré-flight deixa passar e a execução chega
+    a abrir o portal. Provamos isso interceptando o primeiro passo in-portal —
+    sem browser, sem rede."""
     submit = importlib.import_module("adapters.sulamerica.submit")
+    sessao = importlib.import_module("adapters.sulamerica.sessao")
+    monkeypatch.setattr(sessao, "navegador", _fake_navegador())
+    monkeypatch.setattr(sessao, "login", _noop_login)
+
+    async def _sentinela(page):
+        raise submit.SubmitAbortado("SENTINELA: passou do pre-flight")
+    monkeypatch.setattr(submit, "_navegar_para_solicitacao", _sentinela)
+
     job = {"carteirinha": "01234567890123456789", "medico": "NAYARA ROCHA",
            "crm": "23607", "codigos": [{"codigo_tuss": "40901220"}],
            "arquivos": ["/x"]}
-    r = await submit.executar(job)
-    # não pode mais morrer no pré-flight por "CRM ausente"; falha adiante (browser)
-    assert "CRM do solicitante ausente" not in (r.get("mensagem") or "")
+    with pytest.raises(FalhaDeterministica) as ei:
+        await submit.executar(job)
+    # chegou ao passo in-portal => o pré-flight NÃO barrou por "CRM ausente"
+    assert "SENTINELA" in ei.value.detalhe
+    assert "CRM do solicitante ausente" not in ei.value.detalhe
 
 
 @pytest.mark.asyncio
