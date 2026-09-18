@@ -324,12 +324,20 @@ async def preencher_cbo(page, indice: int = 0, tentativas: int = 3) -> bool:
     `indice` escolhe a secao: 0 = Contratado solicitante, 1 = executante (ha'
     DUAS labels 'Código CBO' identicas na pagina).
 
-    CONFERE que o campo ficou preenchido antes de dizer que deu certo. Clicar nao
-    e' prova: em 15/09 (job 3d1b8d73) o CBO do executante ficou VAZIO e esta
-    funcao devolveu True, entao o adapter seguiu e so' descobriu o problema no
-    'Próximo', que o portal reprovou sem mensagem util. O CBO do executante so'
-    popula DEPOIS que o profissional e' selecionado — se a lista ainda nao
-    carregou, o clique cai no vazio.
+    Sucesso = clicou numa opcao REAL do listbox (o placeholder 'Nenhum
+    resultado' e' descartado), com re-tentativa enquanto a lista carrega — o CBO
+    do executante so' popula depois que o profissional e' selecionado.
+
+    A leitura do valor NAO decide mais o resultado. Em 17/09 ela foi promovida a
+    veredito e reprovou preenchimento que tinha dado certo: dois jobs seguidos
+    (18/09, 09:51 e 10:01) abortaram em "CBO (solicitante) nao preenchido" num
+    campo que vinha funcionando havia meses. Localizar o input por geometria e'
+    heuristica, e heuristica nao pode vetar o fluxo.
+
+    Quem valida a pagina e' o PORTAL. Se algum obrigatorio ficar vazio, o
+    'Próximo' nao avanca e _clicar_proximo le a mensagem de reprovacao dele —
+    autoritativa, e ja' implementada (496b92d). A leitura aqui vira so' aviso no
+    log, util para investigar sem derrubar job.
     """
     from . import config
     for _ in range(max(1, tentativas)):
@@ -342,11 +350,13 @@ async def preencher_cbo(page, indice: int = 0, tentativas: int = 3) -> bool:
             await page.mouse.click(coord["cx"], coord["cy"])
             await page.wait_for_timeout(800)
             valor = await valor_do_campo(page, "Código CBO", indice)
-            # None = nao consegui conferir. O clique aconteceu numa opcao real
-            # (o placeholder ja' foi descartado), entao aceita — nao inventa
-            # falha a partir de limitacao da leitura.
-            if valor is None or valor:
-                return True
+            if valor == "":
+                # Sinal, nao veredito: pode ser o campo vazio de verdade OU a
+                # geometria tendo achado outro input. O portal decide no Proximo.
+                print(f"[aviso] CBO indice={indice}: clicou em "
+                      f"{coord.get('texto', '?')!r} mas a leitura do campo veio "
+                      f"vazia. Seguindo — quem valida e' o portal.", flush=True)
+            return True
         await page.wait_for_timeout(700)   # da' tempo da lista carregar e re-tenta
     return False
 

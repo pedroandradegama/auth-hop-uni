@@ -72,11 +72,17 @@ async def test_lista_lenta_e_re_tentada():
 
 
 @pytest.mark.asyncio
-async def test_clique_que_nao_gravou_devolve_false():
-    """O BUG: antes isto devolvia True e o adapter seguia com o campo vazio."""
+async def test_leitura_vazia_nao_derruba_o_job():
+    """REVERSAO CONSCIENTE (18/09). Por um dia esta leitura foi veredito e
+    reprovou preenchimento que tinha dado certo — dois jobs seguidos abortaram
+    em "CBO (solicitante) nao preenchido" num campo que funcionava havia meses.
+
+    Localizar o input por geometria e' heuristica. Heuristica vira aviso, nao
+    veto: quem valida a pagina e' o portal, e _clicar_proximo ja' le a mensagem
+    de reprovacao dele (496b92d)."""
     page = _PageFake(grava=False)
-    assert await _ui.preencher_cbo(page, indice=1) is False
-    assert page.valor == ""
+    assert await _ui.preencher_cbo(page, indice=1) is True
+    assert page.cliques_opcao == 1
 
 
 @pytest.mark.asyncio
@@ -96,11 +102,7 @@ async def test_nao_consegui_ler_e_diferente_de_vazio():
 
 
 @pytest.mark.asyncio
-async def test_leitura_impossivel_nao_reprova_o_preenchimento():
-    """Regressao real: a 1a versao da conferencia devolvia "" quando nao achava
-    o input e reprovava CBO que havia preenchido — o job 5944605d passou a
-    falhar em "CBO (solicitante) nao preenchido" logo depois do deploy, num
-    campo que vinha funcionando."""
+async def test_leitura_impossivel_tambem_nao_reprova():
     page = _PageFake()
     page.valor = None                      # input nao localizado pela geometria
     assert await _ui.preencher_cbo(page, indice=0) is True
