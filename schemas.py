@@ -24,6 +24,13 @@ CONVENIOS_SEM_SUBTIPO = {"sassepe", "sulamerica", "unimed_intercambio"}
 # (CONNECTA) — o portal autoriza sem upload. Para esses, anexos e' opcional.
 CONVENIOS_SEM_ANEXO = {"unimed_intercambio"}
 
+# Convenios que NAO usam carteirinha: a elegibilidade e' por CPF e o adapter
+# sequer le o campo. Uma carteirinha invalida aqui e' ruido do HOP, nao defeito
+# do job — reprovar por ela bloqueia um job que funcionaria.
+# Caso real (17-18/09): o HOP mandava o CPF do paciente no campo `carteirinha`
+# para o Sassepe; o gate generico (>=15 digitos) derrubava o job inteiro.
+CONVENIOS_SEM_CARTEIRINHA = {"sassepe"}
+
 
 class ExameItem(BaseModel):
     codigo_tuss: str
@@ -105,15 +112,10 @@ class JobPreAutorizacao(BaseModel):
 
     @field_validator("carteirinha")
     @classmethod
-    def _carteirinha_minima(cls, v: str | None) -> str | None:
-        # Gate leniente: so' valida SE veio carteirinha. O split autoritativo
-        # (15/16/17 digitos) fica no submit.py do adapter como hard stop.
-        if v is None or not v.strip():
-            return None
-        digitos = "".join(filter(str.isdigit, v))
-        if len(digitos) < 15:
-            raise ValueError(f"carteirinha com {len(digitos)} digitos (minimo 15)")
-        return v.strip()
+    def _carteirinha_normaliza(cls, v: str | None) -> str | None:
+        # So' normaliza. O tamanho depende do CONVENIO, que um field_validator
+        # nao enxerga — a regra vive em _carteirinha_por_convenio (abaixo).
+        return v.strip() if v and v.strip() else None
 
     @field_validator("cpf")
     @classmethod
@@ -132,6 +134,27 @@ class JobPreAutorizacao(BaseModel):
                 "job sem identificador: informe carteirinha ou cpf "
                 "(o adapter do convenio escolhe qual usa)"
             )
+        return self
+
+    @model_validator(mode="after")
+    def _carteirinha_por_convenio(self):
+        # Convenio que nao usa carteirinha: DESCARTA o campo em vez de reprovar
+        # o job. O adapter nao o le, e o identificador exigido (cpf) ja' foi
+        # validado em _identificador_presente.
+        if self.convenio in CONVENIOS_SEM_CARTEIRINHA:
+            if self.carteirinha and not self.cpf:
+                raise ValueError(
+                    f"convenio '{self.convenio}' identifica por CPF; "
+                    f"o job veio so' com carteirinha")
+            self.carteirinha = None
+            return self
+        # Demais convenios: gate leniente. O split autoritativo (15/16/17
+        # digitos) continua no submit.py do adapter, como hard stop.
+        if self.carteirinha:
+            digitos = "".join(filter(str.isdigit, self.carteirinha))
+            if len(digitos) < 15:
+                raise ValueError(
+                    f"carteirinha com {len(digitos)} digitos (minimo 15)")
         return self
 
     @model_validator(mode="after")
