@@ -307,8 +307,19 @@ async def _preencher_cabecalho(page, medico: str, crm_job: str | None = None):
                 f"Profissional solicitante '{medico}' ambiguo no dropdown "
                 f"({len(candidatos)} matches: {candidatos}); requer captura manual."
             )
+        # Sem CRM a busca cai no NOME, e o dropdown do portal atende mal:
+        # lazy-load de ~10 itens em ordem alfabetica, entao nome completo longo
+        # devolve "Nenhum resultado" e nome curto traz gente demais. Dizer isso
+        # e' a diferenca entre o operador procurar defeito no robo e ele ver que
+        # falta o CRM no cadastro do solicitante (gap conhecido do HOP).
+        sem_crm = not (crm or "").strip()
         raise SubmitAbortado(
-            f"Profissional solicitante '{medico}' nao localizado no dropdown."
+            f"Profissional solicitante '{medico}' nao localizado no dropdown"
+            + (" — o job veio SEM CRM, e o portal indexa o solicitante por CRM; "
+               "a busca so' por nome e' fragil. Resolver o CRM deste medico no "
+               "cadastro/HOP."
+               if sem_crm else
+               f" (buscado por CRM {crm}).")
         )
     await page.wait_for_timeout(500)
 
