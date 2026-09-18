@@ -211,6 +211,52 @@ async def _processar(job: JobPreAutorizacao):
         shutil.rmtree(pasta, ignore_errors=True)
 
 
+def _resumir_validacao(e: Exception) -> str:
+    """Erros do pydantic em uma linha legivel para quem vai ler na tela do HOP.
+    `campo: mensagem` — sem stack, sem link de documentacao."""
+    erros = getattr(e, "errors", None)
+    if not callable(erros):
+        return str(e)[:400]
+    partes = []
+    for err in erros():
+        campo = ".".join(str(p) for p in err.get("loc", ())) or "(raiz)"
+        partes.append(f"{campo}: {err.get('msg', '')}")
+    return "; ".join(partes)[:400] or str(e)[:400]
+
+
+async def _devolver_job_invalido(bruto: dict, erro: Exception) -> None:
+    """Fecha no HOP um job que nao passou no schema. Sem isto a linha fica
+    `em_execucao` orfa (o CLAIM ja' ocorreu) ate' o watchdog.
+
+    Nada foi enviado ao portal — nenhum ato irreversivel aconteceu (I1), entao
+    `erro_submit` e' o status correto e o job pode ser corrigido e reenfileirado.
+    """
+    detalhe = _resumir_validacao(erro)
+    job_id = bruto.get("job_id")
+    print(f"[poll] job {job_id} rejeitado no schema: {detalhe}", flush=True)
+    if not job_id:
+        print("[poll] sem job_id no payload — impossivel devolver ao HOP.",
+              flush=True)
+        return
+    payload = {
+        "tipo": "submit_result",
+        "job_id": job_id,
+        "idempotency_key": bruto.get("idempotency_key"),
+        "org_id": bruto.get("org_id"),
+        "convenio": bruto.get("convenio"),
+        "status": "erro_submit",
+        "numero_protocolo": None,
+        "evidencias": [],
+        "mensagem": (f"Job rejeitado pelo worker antes de abrir o portal "
+                     f"(dados invalidos): {detalhe}"),
+    }
+    try:
+        await callback.enviar(payload)
+    except Exception:
+        import traceback
+        print("[callback-falhou]", traceback.format_exc(), flush=True)
+
+
 async def _pollar_uma_vez(client: httpx.AsyncClient) -> bool:
     """Consulta proximo-job-autorizacao (POST com corpo {}). Processa se houver
     job. Retorna True se processou um job, False se nao havia (204).
@@ -224,7 +270,19 @@ async def _pollar_uma_vez(client: httpx.AsyncClient) -> bool:
         return False
     r.raise_for_status()
 
-    job = JobPreAutorizacao(**r.json())  # 422 logico aqui = job malformado do HOP
+    bruto = r.json()
+    try:
+        job = JobPreAutorizacao(**bruto)
+    except Exception as e:
+        # Job malformado do HOP. O CLAIM ja' aconteceu — a linha esta'
+        # `em_execucao` la'. Se so' logarmos e seguirmos, ela fica ORFA ate' o
+        # watchdog virar em requer_humano 30~40 min depois, sem motivo nenhum, e
+        # o operador recebe um job sem explicacao.
+        # Caso real (17/09, job fa134b3f): o HOP mandou o CPF da paciente no
+        # campo `carteirinha` para o Sassepe — "carteirinha com 11 digitos
+        # (minimo 15)". Ficou orfa 40 min e chegou ao operador em branco.
+        await _devolver_job_invalido(bruto, e)
+        return True
     if job.idempotency_key in _jobs_vistos:
         print(f"[poll] job {job.job_id} ja' visto; ignorado.", flush=True)
         return True
