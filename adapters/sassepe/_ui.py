@@ -143,7 +143,12 @@ async def abrir_dropdown(page, label_text: str, search_term: str,
     await page.wait_for_timeout(500)
     await page.keyboard.press("Control+a")
     await page.wait_for_timeout(200)
-    await page.keyboard.type(search_term)
+    if search_term:
+        await page.keyboard.type(search_term)
+    else:
+        # Termo vazio = SEM filtro: lista o que o portal tiver. Digitar ""
+        # deixaria o texto anterior no campo e o filtro valendo.
+        await page.keyboard.press("Delete")
     await page.wait_for_timeout(2000)
     await page.evaluate(_JS_WHEEL_LISTBOX)  # REQUERIDO p/ lazy-load
     await page.wait_for_timeout(800)
@@ -342,16 +347,26 @@ async def preencher_cbo(page, indice: int = 0, tentativas: int = 5,
     """
     from . import config
     espera = max(100, espera_inicial_ms)
+    # O CBO e' a ocupacao DAQUELE profissional no conselho, e o portal filtra a
+    # lista por ele. Buscar o literal '999999' so' funciona para quem esta'
+    # cadastrado como "nao informado" — foi o caso do executante fixo no piloto,
+    # e virou premissa. Em 22/09 (job c51dbc9d) a solicitante tinha CBO real e o
+    # filtro devolveu "Nenhum resultado" em todas as tentativas.
+    # Ordem: termo configurado primeiro (preserva o comportamento que funciona),
+    # depois SEM filtro, aceitando a ocupacao que o portal oferecer.
+    termos = [config.CBO_SEARCH, ""]
     for _ in range(max(1, tentativas)):
-        if not await abrir_dropdown(page, "Código CBO", config.CBO_SEARCH,
-                                    indice=indice):
-            await page.wait_for_timeout(espera)
-            espera *= 2
-            continue   # label ainda nao renderizou; re-tenta em vez de desistir
-        coord = await page.evaluate(_JS_PRIMEIRA_OPCAO)
+        coord = None
+        for termo in termos:
+            if not await abrir_dropdown(page, "Código CBO", termo, indice=indice):
+                continue   # label ainda nao renderizou
+            coord = await page.evaluate(_JS_PRIMEIRA_OPCAO)
+            if coord:
+                break
         if coord:
             await page.mouse.click(coord["cx"], coord["cy"])
             await page.wait_for_timeout(800)
+            print(f"[cbo] indice={indice}: {coord.get('texto', '?')!r}", flush=True)
             valor = await valor_do_campo(page, "Código CBO", indice)
             if valor == "":
                 # Sinal, nao veredito: pode ser o campo vazio de verdade OU a

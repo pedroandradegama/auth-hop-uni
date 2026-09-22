@@ -18,8 +18,11 @@ _ui = importlib.import_module("adapters.sassepe._ui")
 class _PageFake:
     """Portal falso: a opção do CBO só aparece a partir de `abre_na_tentativa`."""
 
-    def __init__(self, abre_na_tentativa=1, placeholder=False, grava=True):
+    def __init__(self, abre_na_tentativa=1, placeholder=False, grava=True,
+                 so_sem_filtro=False):
         self.abre = abre_na_tentativa
+        self.so_sem_filtro = so_sem_filtro   # opcao aparece so' com filtro limpo
+        self.filtro = None                    # ultimo termo digitado/limpo
         self.placeholder = placeholder
         self.grava = grava
         self.valor = ""
@@ -39,7 +42,11 @@ class _PageFake:
             self.tentativa += 1
             if self.placeholder or self.tentativa < self.abre:
                 return None                  # lista vazia (ou ainda carregando)
-            return {"cx": 5, "cy": 5, "texto": "999999 - null"}
+            if self.so_sem_filtro and self.filtro != "":
+                return None                  # filtro '999999' nao casa com ninguem
+            return {"cx": 5, "cy": 5,
+                    "texto": "225125 - MEDICO RADIOLOGISTA"
+                             if self.so_sem_filtro else "999999 - null"}
         if "melhor.value" in js:             # leitura do valor do campo
             return self.valor
         return None
@@ -51,8 +58,12 @@ class _PageFake:
         if self.grava:
             self.valor = "999999 - null"
 
-    async def press(self, k): pass
-    async def type(self, t): pass
+    async def press(self, k):
+        if k == "Delete":
+            self.filtro = ""
+
+    async def type(self, t):
+        self.filtro = t
     async def wait_for_timeout(self, ms): pass
 
 
@@ -126,3 +137,26 @@ async def test_label_ainda_nao_renderizado_e_re_tentado():
     page = _PageLabelLento()
     assert await _ui.preencher_cbo(page, indice=1) is True
     assert page.buscas_label == 2
+
+
+class TestCboPorProfissional:
+    """O CBO é a ocupação DAQUELE profissional; o portal filtra a lista por ele.
+
+    22/set, job c51dbc9d: a solicitante tinha CBO real cadastrado, e buscar o
+    literal '999999' devolveu "Nenhum resultado" nas 5 tentativas (~40s). A
+    premissa "CBO único do portal" veio do piloto, onde o executante fixo estava
+    como "não informado".
+    """
+
+    @pytest.mark.asyncio
+    async def test_cai_para_busca_sem_filtro_quando_999999_nao_casa(self):
+        page = _PageFake(so_sem_filtro=True)
+        assert await _ui.preencher_cbo(page, indice=0) is True
+        assert page.cliques_opcao == 1
+        assert page.filtro == ""          # precisou limpar o filtro
+
+    @pytest.mark.asyncio
+    async def test_quem_tem_999999_continua_resolvendo_no_1o_termo(self):
+        page = _PageFake()
+        assert await _ui.preencher_cbo(page, indice=0) is True
+        assert page.filtro == "999999"    # nao precisou do fallback
