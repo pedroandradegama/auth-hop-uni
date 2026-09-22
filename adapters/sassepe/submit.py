@@ -324,7 +324,14 @@ async def _preencher_cabecalho(page, medico: str, crm_job: str | None = None):
     await page.wait_for_timeout(500)
 
     if not await _ui.preencher_cbo(page, indice=0):  # CBO da secao SOLICITANTE
-        raise SubmitAbortado("CBO (solicitante) nao preenchido.")
+        raise FalhaDeterministica(
+            motivo=MotivoFalha.CAMPO_NAO_PREENCHIDO,
+            etapa="submit_sassepe",
+            detalhe=(f"CBO (solicitante) nao preenchido: o dropdown nao ofereceu "
+                     f"nenhuma opcao em 5 tentativas (~40s). Nada foi enviado "
+                     f"ao portal — seguro reenfileirar."),
+            url=page.url,
+        )
     await page.wait_for_timeout(300)
 
     # Profissional EXECUTANTE (fixo: Pedro Andrade 21798).
@@ -336,7 +343,14 @@ async def _preencher_cabecalho(page, medico: str, crm_job: str | None = None):
     await page.wait_for_timeout(500)
 
     if not await _ui.preencher_cbo(page, indice=1):  # CBO da secao EXECUTANTE
-        raise SubmitAbortado("CBO (executante) nao preenchido.")
+        raise FalhaDeterministica(
+            motivo=MotivoFalha.CAMPO_NAO_PREENCHIDO,
+            etapa="submit_sassepe",
+            detalhe=(f"CBO (executante) nao preenchido: o dropdown nao ofereceu "
+                     f"nenhuma opcao em 5 tentativas (~40s). Nada foi enviado "
+                     f"ao portal — seguro reenfileirar."),
+            url=page.url,
+        )
     await page.wait_for_timeout(300)
 
     fixos = [

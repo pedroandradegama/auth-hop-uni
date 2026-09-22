@@ -25,6 +25,13 @@ class MotivoFalha(str, Enum):
     # concluiu "a rota do portal mudou" para um robô que já estava dentro
     # do formulário.
     PROCEDIMENTO_INDISPONIVEL = "procedimento_indisponivel"
+    # Campo obrigatorio do formulario nao ficou preenchido ANTES de submeter.
+    # Nada foi enviado ao portal, entao e' seguro reenfileirar — e' falha
+    # transitoria de carregamento, nao decisao humana nem layout quebrado.
+    # Fora de MOTIVOS_AGENTE: medido em 21/09 (job c51dbc9d), o agente gastou
+    # 189s e US$ 0,087 em 15 passos sem recuperar nada. Ele nao retoma do ponto
+    # de falha — reconstroi o formulario do zero e trava no primeiro campo.
+    CAMPO_NAO_PREENCHIDO = "campo_nao_preenchido"
 
 
 # Motivos que justificam acionar o loop de agente (custo de token > 0).

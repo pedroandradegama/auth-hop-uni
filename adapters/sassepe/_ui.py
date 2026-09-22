@@ -319,7 +319,8 @@ async def valor_do_campo(page, label_text: str, indice: int = 0):
     return None if v is None else str(v).strip()
 
 
-async def preencher_cbo(page, indice: int = 0, tentativas: int = 3) -> bool:
+async def preencher_cbo(page, indice: int = 0, tentativas: int = 5,
+                        espera_inicial_ms: int = 700) -> bool:
     """CBO 999999: unica opcao apos abrir; clica o 1o item do listbox.
     `indice` escolhe a secao: 0 = Contratado solicitante, 1 = executante (ha'
     DUAS labels 'Código CBO' identicas na pagina).
@@ -340,10 +341,12 @@ async def preencher_cbo(page, indice: int = 0, tentativas: int = 3) -> bool:
     log, util para investigar sem derrubar job.
     """
     from . import config
+    espera = max(100, espera_inicial_ms)
     for _ in range(max(1, tentativas)):
         if not await abrir_dropdown(page, "Código CBO", config.CBO_SEARCH,
                                     indice=indice):
-            await page.wait_for_timeout(700)
+            await page.wait_for_timeout(espera)
+            espera *= 2
             continue   # label ainda nao renderizou; re-tenta em vez de desistir
         coord = await page.evaluate(_JS_PRIMEIRA_OPCAO)
         if coord:
@@ -357,7 +360,14 @@ async def preencher_cbo(page, indice: int = 0, tentativas: int = 3) -> bool:
                       f"{coord.get('texto', '?')!r} mas a leitura do campo veio "
                       f"vazia. Seguindo — quem valida e' o portal.", flush=True)
             return True
-        await page.wait_for_timeout(700)   # da' tempo da lista carregar e re-tenta
+        # Backoff: a lista do CBO so' popula depois que o profissional carrega, e
+        # o portal varia muito nesse tempo. Espera fixa de 700ms x3 (a versao
+        # anterior) dava ~13s de janela total e nao bastou em 21/09 — o job
+        # c51dbc9d abortou em "CBO (solicitante) nao preenchido" tendo CRM e
+        # solicitante corretos. Com 5 tentativas e dobra, a janela vai a ~40s,
+        # gasta SO' quando esta' falhando.
+        await page.wait_for_timeout(espera)
+        espera *= 2
     return False
 
 
