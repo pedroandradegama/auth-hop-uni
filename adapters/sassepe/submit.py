@@ -366,13 +366,32 @@ async def _preencher_cabecalho(page, medico: str, crm_job: str | None = None):
 
 
 # ── Exames (loop) ─────────────────────────────────────────────────────────────
+async def _tabela_ja_selecionada(page) -> bool:
+    """A Tabela do bloco de procedimento ja' esta' em 22?
+
+    Ela e' SEMPRE 22 e nao muda entre os itens da mesma guia, mas o portal pode
+    limpar o bloco depois de 'Adicionar'. Conferir custa uma leitura; re-selecionar
+    as cegas custa 5,1s por exame.
+    """
+    valor = await _ui.valor_do_campo(page, "Tabela")
+    return bool(valor) and config.TABELA_NUM in valor
+
+
 async def _adicionar_exame(page, codigo: str, qty: int):
     """Adiciona UM exame: Tabela 22 -> codigo -> quantidade (+) -> Adicionar.
-    Retorna (ok, erro). Tabela e' SEMPRE 22 (busca/match por numero)."""
-    if not await _ui.preencher_dropdown(page, "Tabela", config.TABELA_NUM,
-                                        config.TABELA_NUM):
-        return False, "Tabela 22 nao selecionada."
-    await page.wait_for_timeout(500)
+    Retorna (ok, erro). Tabela e' SEMPRE 22 (busca/match por numero).
+
+    A Tabela so' e' selecionada quando NAO esta' em 22. Antes ela era
+    re-selecionada a cada exame — 5,1s de dropdown por item, 41% do custo. Num
+    pedido de 20 exames isso sozinho somava 1,7 min. Se o portal limpar o campo
+    entre itens, a conferencia detecta e seleciona de novo; o comportamento
+    continua correto, so' deixa de pagar quando nao precisa.
+    """
+    if not await _tabela_ja_selecionada(page):
+        if not await _ui.preencher_dropdown(page, "Tabela", config.TABELA_NUM,
+                                            config.TABELA_NUM):
+            return False, "Tabela 22 nao selecionada."
+        await page.wait_for_timeout(500)
 
     if not await _ui.preencher_dropdown(
         page, "Código e descrição do procedimento ou item", codigo, codigo

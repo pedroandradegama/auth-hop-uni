@@ -118,6 +118,15 @@ _JS_SCROLL_LABEL = """
 }
 """
 
+# JS: o listbox esta' aberto e ja' tem conteudo? (inclui o placeholder de vazio —
+# "ja' respondeu" e' o que importa aqui; quem filtra placeholder e' quem le.)
+_JS_LISTBOX_PRONTO = """
+() => {
+  const lb = document.querySelector('[role=listbox]');
+  return !!lb && lb.children.length > 0;
+}
+"""
+
 _JS_WHEEL_LISTBOX = """
 () => {
   const lb = document.querySelector('[role=listbox]');
@@ -125,6 +134,24 @@ _JS_WHEEL_LISTBOX = """
     {deltaY: 300, bubbles: true, cancelable: true, composed: true}));
 }
 """
+
+
+async def _esperar_listbox(page, timeout_ms: int, passo_ms: int = 150) -> bool:
+    """Poll ate' o listbox responder, com o MESMO teto de antes.
+
+    Trocar espera fixa por poll nao reduz o pior caso — so' sai mais cedo quando
+    o portal ja' respondeu. Com esperas cravadas, cada dropdown custava 3,8s
+    independente de tudo, e um pedido de 20 exames levava 4,2 min so' na etapa
+    de exames (reclamacao da ponta em 25/09).
+    """
+    for _ in range(max(1, timeout_ms // passo_ms)):
+        try:
+            if await page.evaluate(_JS_LISTBOX_PRONTO):
+                return True
+        except Exception:
+            pass          # contexto destruido por navegacao do SPA: segue o poll
+        await page.wait_for_timeout(passo_ms)
+    return False
 
 
 async def abrir_dropdown(page, label_text: str, search_term: str,
@@ -149,9 +176,9 @@ async def abrir_dropdown(page, label_text: str, search_term: str,
         # Termo vazio = SEM filtro: lista o que o portal tiver. Digitar ""
         # deixaria o texto anterior no campo e o filtro valendo.
         await page.keyboard.press("Delete")
-    await page.wait_for_timeout(2000)
+    await _esperar_listbox(page, 2000)
     await page.evaluate(_JS_WHEEL_LISTBOX)  # REQUERIDO p/ lazy-load
-    await page.wait_for_timeout(800)
+    await _esperar_listbox(page, 800)
     return True
 
 
