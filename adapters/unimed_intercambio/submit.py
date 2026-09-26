@@ -354,20 +354,47 @@ async def adicionar_item_procedimento(page, codigo: str, quantidade: int) -> tup
     if not qtd_ok:
         return False, f"Campo Quantidade nao ficou preenchido para o codigo '{codigo}'."
 
-    async def _contar_linhas_tabela_procedimentos():
+    # O que prova que o procedimento entrou e' O CODIGO ESTAR NA TABELA — nao a
+    # contagem de linhas.
+    #
+    # A versao anterior comparava linhas antes/depois e errava para o lado
+    # perigoso: em 25/09 (job fc58a7e9, 26 exames) reportou 13 codigos como
+    # "nao entrou" e ABORTOU O ENVIO — mas o screenshot do portal mostra os 13
+    # na tabela, com quantidade 1. Guia correta descartada e mandada para
+    # revisao humana. A contagem quebra com postback do ASP.NET ainda nao
+    # refletido no DOM, tabela aninhada casando no seletor e paginacao do grid;
+    # a presenca do codigo nao quebra com nenhum dos tres.
+    async def _procedimento_na_tabela(codigo_alvo: str) -> bool:
         try:
             return await page.evaluate(
-                """() => {
+                """(cod) => {
                     const tables = Array.from(document.querySelectorAll('table'));
-                    const tabela = tables.find(t => (t.innerText || '').includes('Ações') && (t.innerText || '').includes('Quantidade'));
-                    if (!tabela) return 0;
-                    return tabela.querySelectorAll('tbody tr').length;
-                }"""
+                    return tables.some(t => {
+                      const cab = (t.innerText || '');
+                      if (!cab.includes('Ações') || !cab.includes('Quantidade')) return false;
+                      return Array.from(t.querySelectorAll('tbody tr')).some(tr => {
+                        const cels = Array.from(tr.querySelectorAll('td'))
+                          .map(td => (td.textContent || '').trim());
+                        return cels.includes(cod);
+                      });
+                    });
+                }""",
+                codigo_alvo,
             )
         except Exception:
-            return 0
+            return False
 
-    linhas_antes = await _contar_linhas_tabela_procedimentos()
+    async def _esperar_na_tabela(codigo_alvo: str, timeout_ms=10000,
+                                 passo_ms=400) -> bool:
+        """Poll ate' a linha aparecer. O postback do Connecta e' assincrono: ler
+        o DOM logo apos o clique pega estado velho."""
+        for _ in range(max(1, timeout_ms // passo_ms)):
+            if await _procedimento_na_tabela(codigo_alvo):
+                return True
+            await page.wait_for_timeout(passo_ms)
+        return False
+
+    ja_estava = await _procedimento_na_tabela(codigo)
 
     botao_adicionar = page.locator(f"#{ID_BOTAO_ADICIONAR}")
     await botao_adicionar.wait_for(state="attached", timeout=10000)
@@ -390,16 +417,28 @@ async def adicionar_item_procedimento(page, codigo: str, quantidade: int) -> tup
                 pass
         await page.wait_for_timeout(500)
 
-    await _blur_e_aguardar(page, 7)
-    await _assentar_pagina(page)
-
-    linhas_depois = await _contar_linhas_tabela_procedimentos()
-    if linhas_depois <= linhas_antes:
-        await _click(botao_adicionar)
+    # Sai assim que a linha aparecer — nao paga as esperas fixas a' toa. Numa
+    # guia de 26 exames o blur+assentar fixos respondiam por boa parte dos
+    # 18 min que o job levou antes de abortar.
+    if not await _esperar_na_tabela(codigo):
         await _blur_e_aguardar(page, 7)
-        linhas_depois = await _contar_linhas_tabela_procedimentos()
-        if linhas_depois <= linhas_antes:
-            return False, f"Codigo '{codigo}' nao entrou na tabela de Procedimentos apos clicar Adicionar (2 tentativas)."
+        await _assentar_pagina(page)
+        if not await _esperar_na_tabela(codigo, timeout_ms=4000):
+            await _click(botao_adicionar)
+            await _blur_e_aguardar(page, 7)
+            if not await _esperar_na_tabela(codigo):
+                sufixo = (" (o portal exibiu 'Digite os dados obrigatorios' — "
+                          "campo do bloco de procedimento ficou vazio)"
+                          if alerta_presente else "")
+                return False, (f"Codigo '{codigo}' nao aparece na tabela de "
+                               f"Procedimentos apos 2 cliques em Adicionar"
+                               f"{sufixo}.")
+    if ja_estava:
+        # Defesa: o codigo ja' estava la' antes de clicarmos. Nao da' para
+        # afirmar que ESTE clique o adicionou, e duplicar procedimento na guia
+        # e' irreversivel depois do envio.
+        return False, (f"Codigo '{codigo}' ja' constava na tabela antes de "
+                       f"adicionar — possivel duplicata; requer conferencia.")
 
     return True, None
 
