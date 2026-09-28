@@ -118,15 +118,6 @@ _JS_SCROLL_LABEL = """
 }
 """
 
-# JS: o listbox esta' aberto e ja' tem conteudo? (inclui o placeholder de vazio —
-# "ja' respondeu" e' o que importa aqui; quem filtra placeholder e' quem le.)
-_JS_LISTBOX_PRONTO = """
-() => {
-  const lb = document.querySelector('[role=listbox]');
-  return !!lb && lb.children.length > 0;
-}
-"""
-
 _JS_WHEEL_LISTBOX = """
 () => {
   const lb = document.querySelector('[role=listbox]');
@@ -136,17 +127,49 @@ _JS_WHEEL_LISTBOX = """
 """
 
 
+_JS_LISTBOX_OPTIONS = """
+() => {
+  const lb = document.querySelector('[role=listbox]');
+  if (!lb) return [];
+  let els = Array.from(lb.querySelectorAll('[role=option]'));
+  if (!els.length) els = Array.from(lb.children);
+  const seen = new Set(); const out = [];
+  // 'Nenhum resultado' e' o estado VAZIO do portal renderizado dentro do
+  // listbox — contar como opcao faz o erro dizer "portal ofereceu 1 opcao:
+  // Nenhum resultado", que e' o oposto do que aconteceu.
+  const vazio = (t) => /^nenhum resultado/i.test(t);
+  for (const e of els) {
+    const t = (e.textContent || '').trim();
+    if (t.length > 2 && !vazio(t) && !seen.has(t)) { seen.add(t); out.push(t); }
+  }
+  return out;
+}
+"""
+
+
 async def _esperar_listbox(page, timeout_ms: int, passo_ms: int = 150) -> bool:
-    """Poll ate' o listbox responder, com o MESMO teto de antes.
+    """Poll ate' o listbox trazer OPCAO REAL, com o MESMO teto de antes.
 
     Trocar espera fixa por poll nao reduz o pior caso — so' sai mais cedo quando
     o portal ja' respondeu. Com esperas cravadas, cada dropdown custava 3,8s
     independente de tudo, e um pedido de 20 exames levava 4,2 min so' na etapa
     de exames (reclamacao da ponta em 25/09).
+
+    O criterio de parada e' `_JS_LISTBOX_OPTIONS` — o MESMO que o chamador usa
+    para ler o resultado. Quem espera e quem le TEM que concordar sobre o que
+    conta como opcao: a primeira versao deste poll parava em
+    `listbox.children.length > 0`, e o "Nenhum resultado" do portal e' renderizado
+    DENTRO do listbox enquanto a busca ainda esta' em voo. A espera terminava em
+    ~150ms num estado que a leitura descarta, e o adapter concluia "o portal nao
+    tem esse registro" sem nunca ter visto a resposta (28/09: 4 buscas de
+    solicitante em 5s, contra 23s antes da mudanca; o portal tinha o medico).
+
+    Listbox vazio de verdade custa o teto inteiro — que e' o custo que existia
+    antes do poll. O ganho de tempo vem do caso de SUCESSO, que e' a norma.
     """
     for _ in range(max(1, timeout_ms // passo_ms)):
         try:
-            if await page.evaluate(_JS_LISTBOX_PRONTO):
+            if await page.evaluate(_JS_LISTBOX_OPTIONS):
                 return True
         except Exception:
             pass          # contexto destruido por navegacao do SPA: segue o poll
@@ -214,26 +237,6 @@ async def preencher_dropdown(page, label_text: str, search_term: str,
 
 
 # JS: extrai os textos das opcoes do listbox aberto (dedup).
-_JS_LISTBOX_OPTIONS = """
-() => {
-  const lb = document.querySelector('[role=listbox]');
-  if (!lb) return [];
-  let els = Array.from(lb.querySelectorAll('[role=option]'));
-  if (!els.length) els = Array.from(lb.children);
-  const seen = new Set(); const out = [];
-  // 'Nenhum resultado' e' o estado VAZIO do portal renderizado dentro do
-  // listbox — contar como opcao faz o erro dizer "portal ofereceu 1 opcao:
-  // Nenhum resultado", que e' o oposto do que aconteceu.
-  const vazio = (t) => /^nenhum resultado/i.test(t);
-  for (const e of els) {
-    const t = (e.textContent || '').trim();
-    if (t.length > 2 && !vazio(t) && !seen.has(t)) { seen.add(t); out.push(t); }
-  }
-  return out;
-}
-"""
-
-
 async def selecionar_solicitante(page, crm: str | None, nome: str):
     """Seleciona o Profissional solicitante por CRM + nome (descoberto no portal:
     o dropdown casa por NOME e por CRM, e o prefixo exibido E' o CRM — que repete

@@ -64,5 +64,5 @@ class TestUrlNosAdapters:
         assert hasattr(src, "_UrlNaFalha")
         import inspect
         corpo = inspect.getsource(src.executar)
-        assert "_UrlNaFalha(page.url)" in corpo
+        assert "_UrlNaFalha(page.url" in corpo
         assert "url=e.url" in corpo

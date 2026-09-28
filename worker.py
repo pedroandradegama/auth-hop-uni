@@ -105,6 +105,21 @@ def _montar_job_agente(job: JobPreAutorizacao, dados: dict,
     }
 
 
+def _evidencias_da_falha(falha: FalhaDeterministica) -> list[dict]:
+    """O screenshot do instante do erro, no formato que o HOP exibe.
+
+    As tres saidas de falha abaixo mandavam `evidencias: []` cravado, entao a
+    tela de Submissao ao convenio mostrava "EVIDENCIAS DO ROBO []" mesmo quando
+    o adapter tinha gravado a imagem em disco (28/09). Sem a imagem o operador
+    so' tem o texto — e texto de agente ja' se provou capaz de descrever uma
+    causa que nao aconteceu.
+    """
+    if not falha.screenshot_path:
+        return []
+    return [{"etapa": falha.etapa, "screenshot_path": falha.screenshot_path,
+             "motivo": falha.motivo.value}]
+
+
 async def _rodar_agente(job: JobPreAutorizacao, dados: dict,
                         falha: FalhaDeterministica,
                         caminhos: list[str]) -> tuple[dict, "ResultadoAgente"]:
@@ -164,7 +179,8 @@ async def _processar(job: JobPreAutorizacao):
                         print("[agente-falhou]", traceback.format_exc(), flush=True)
                         resultado = {"status": "requer_humano",
                                      "numero_protocolo": None,
-                                     "requer_captura_manual": True, "evidencias": [],
+                                     "requer_captura_manual": True,
+                                     "evidencias": _evidencias_da_falha(falha),
                                      "mensagem": f"Falha determ.: {falha}; "
                                                  f"agente abortou: {e}"}
                 elif falha.motivo in MOTIVOS_REQUER_HUMANO:
@@ -173,11 +189,12 @@ async def _processar(job: JobPreAutorizacao):
                     # outro canal). Marcar como erro_submit mandaria o operador
                     # procurar defeito onde nao ha'.
                     resultado = {"status": "requer_humano", "numero_protocolo": None,
-                                 "requer_captura_manual": True, "evidencias": [],
+                                 "requer_captura_manual": True,
+                                 "evidencias": _evidencias_da_falha(falha),
                                  "mensagem": f"{falha.detalhe or falha}"}
                 else:
                     resultado = {"status": "erro_submit", "numero_protocolo": None,
-                                 "evidencias": [],
+                                 "evidencias": _evidencias_da_falha(falha),
                                  "mensagem": f"Falha deterministica "
                                              f"({falha.motivo.value}): {falha}"}
             except Exception as e:

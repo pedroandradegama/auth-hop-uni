@@ -43,9 +43,10 @@ from agente import FalhaDeterministica, MotivoFalha
 class _UrlNaFalha(Exception):
     """Carrega a URL viva ate' o handler externo (o browser ja' fechou la')."""
 
-    def __init__(self, url: str) -> None:
+    def __init__(self, url: str, screenshot: str | None = None) -> None:
         super().__init__(url)
         self.url = url
+        self.screenshot = screenshot
 
 
 class SubmitAbortado(Exception):
@@ -113,11 +114,17 @@ async def _snap(page, etapa: str, evidencias: list) -> str:
     return caminho
 
 
-async def _diag(page, etapa: str):
+async def _diag(page, etapa: str) -> str | None:
     """Instrumentacao (best-effort): screenshot em disco + URL no stdout a cada
     passo inicial do submit. NAO entra no fluxo — serve p/ VER onde/porque o
-    adapter falha cedo (antes do 'pagina1_preenchida'). Nunca levanta."""
+    adapter falha cedo (antes do 'pagina1_preenchida'). Nunca levanta.
+
+    Devolve o caminho gravado (ou None). O de etapa='FALHA' e' a UNICA imagem do
+    instante do erro quando ele acontece antes do primeiro `_snap`: sem propaga-lo
+    a tela do HOP mostra 'EVIDENCIAS DO ROBO []' e o operador decide no escuro.
+    """
     import contextlib
+    caminho = None
     with contextlib.suppress(Exception):
         os.makedirs(config.SCREENSHOTS_DIR, exist_ok=True)
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -128,6 +135,7 @@ async def _diag(page, etapa: str):
             titulo = await page.title()
         print(f"[diag] {etapa}: url={page.url!r} titulo={titulo!r} -> {caminho}",
               flush=True)
+    return caminho
 
 
 # ── Navegacao ────────────────────────────────────────────────────────────────
@@ -674,6 +682,8 @@ async def executar(job: dict) -> dict:
         return {"status": "erro_submit", "numero_protocolo": None,
                 "evidencias": [], "mensagem": "Nenhum anexo (pedido medico) informado."}
 
+    tela_da_falha: str | None = None   # screenshot do INSTANTE do erro (fase inicial)
+
     try:
         async with sessao.navegador() as page:
           try:
@@ -690,7 +700,7 @@ async def executar(job: dict) -> dict:
                   await _preencher_cabecalho(page, job["medico"], job.get("crm"))
                   await _diag(page, "pos_cabecalho")
               except Exception:
-                  await _diag(page, "FALHA")
+                  tela_da_falha = await _diag(page, "FALHA") or tela_da_falha
                   raise
 
               # Exames — HARD STOP (I1): TODOS tem que entrar, senao aborta antes
@@ -699,7 +709,7 @@ async def executar(job: dict) -> dict:
               for codigo_portal, qty in agregar_por_codigo_portal(codigos):
                   ok, erro = await _adicionar_exame(page, codigo_portal, qty)
                   if not ok:
-                      await _snap(page, "erro_exame", evidencias)
+                      tela = await _snap(page, "erro_exame", evidencias)
                       if "listbox vazio" in erro:
                           # O portal buscou e NAO tem o codigo. Nao e' layout
                           # quebrado: e' o convenio nao oferecendo o procedimento.
@@ -714,6 +724,7 @@ async def executar(job: dict) -> dict:
                                        f"codigo do exame ou autorizar por outro "
                                        f"canal."),
                               url=page.url,
+                              screenshot_path=tela,
                           )
                       raise SubmitAbortado(f"Exame nao adicionado: {erro}")
 
@@ -731,7 +742,7 @@ async def executar(job: dict) -> dict:
               # Tela de resumo (/confirmar-dados) -> Enviar (irreversivel) + protocolo.
               return await _enviar_solicitacao(page, cpf, evidencias)
           except SubmitAbortado as e:
-            raise _UrlNaFalha(page.url) from e
+            raise _UrlNaFalha(page.url, tela_da_falha) from e
 
     except _UrlNaFalha as e:
         # A URL viva no momento da falha. Sem ela o agente nao sabe ONDE o robo
@@ -742,6 +753,7 @@ async def executar(job: dict) -> dict:
             etapa="submit_sassepe",
             detalhe=str(e.__cause__ or e),
             url=e.url,
+            screenshot_path=e.screenshot,
         ) from e.__cause__
     except FalhaDeterministica:
         raise  # ja classificado por um passo interno (defesa; hoje nao ocorre)
