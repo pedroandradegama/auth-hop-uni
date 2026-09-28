@@ -321,6 +321,7 @@ async def _preencher_cabecalho(page, medico: str, crm_job: str | None = None):
         # e' a diferenca entre o operador procurar defeito no robo e ele ver que
         # falta o CRM no cadastro do solicitante (gap conhecido do HOP).
         sem_crm = not (crm or "").strip()
+        relato = "; ".join(candidatos) if candidatos else "nenhuma busca chegou a rodar"
         raise SubmitAbortado(
             f"Profissional solicitante '{medico}' nao localizado no dropdown"
             + (" — o job veio SEM CRM, e o portal indexa o solicitante por CRM; "
@@ -328,6 +329,7 @@ async def _preencher_cabecalho(page, medico: str, crm_job: str | None = None):
                "cadastro/HOP."
                if sem_crm else
                f" (buscado por CRM {crm}).")
+            + f" O QUE O PORTAL RESPONDEU, por termo: {relato}."
         )
     await page.wait_for_timeout(500)
 
@@ -411,7 +413,7 @@ async def _adicionar_exame(page, codigo: str, qty: int):
         #   listbox VAZIO  -> o portal buscou e nao tem o codigo na tabela 22
         #   listbox CHEIO  -> o codigo existe mas o texto da opcao nao casou
         try:
-            opcoes = await page.evaluate(_ui._JS_LISTBOX_OPTIONS)
+            opcoes = await _ui.opcoes_do_listbox(page)
         except Exception:
             opcoes = None
         if opcoes:

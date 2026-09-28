@@ -37,7 +37,9 @@ class TestEsperaPorEvento:
     async def test_sai_assim_que_o_listbox_responde(self):
         class _Page:
             def __init__(self): self.esperas = 0
-            async def evaluate(self, js, *a): return self.esperas >= 2
+            async def evaluate(self, js, *a):
+                return {"estado": "ok" if self.esperas >= 2 else "fechado",
+                        "opcoes": ["x - Y"] if self.esperas >= 2 else []}
             async def wait_for_timeout(self, ms): self.esperas += 1
         page = _Page()
         assert await _ui._esperar_listbox(page, 2000, passo_ms=150) is True
@@ -47,7 +49,8 @@ class TestEsperaPorEvento:
     async def test_respeita_o_teto_quando_nunca_responde(self):
         class _Page:
             def __init__(self): self.esperas = 0
-            async def evaluate(self, js, *a): return False
+            async def evaluate(self, js, *a):
+                return {"estado": "fechado", "opcoes": []}
             async def wait_for_timeout(self, ms): self.esperas += 1
         page = _Page()
         assert await _ui._esperar_listbox(page, 900, passo_ms=150) is False
@@ -61,7 +64,7 @@ class TestEsperaPorEvento:
             async def evaluate(self, js, *a):
                 self.n += 1
                 if self.n == 1: raise RuntimeError("Execution context destroyed")
-                return True
+                return {"estado": "ok", "opcoes": ["x - Y"]}
             async def wait_for_timeout(self, ms): pass
         assert await _ui._esperar_listbox(_Page(), 900, passo_ms=150) is True
 

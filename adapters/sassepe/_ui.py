@@ -25,6 +25,10 @@ import unicodedata
 # sobrenomes genuinamente diferentes:
 #   CALVACANTI x CAVALCANTI = 0.90  (transposicao — aceita)
 #   MACEDO     x MACHADO    = 0.77  (pessoas diferentes — recusa)
+# Polls consecutivos de 'Nenhum resultado' para aceitar o vazio como
+# resposta e nao como resquicio da busca anterior (~450ms).
+_VAZIO_ESTAVEL = 3
+
 LIMIAR_FUZZY = 0.82
 
 # Abaixo disto, exigimos casamento EXATO. Token curto tem pouca informacao e
@@ -127,53 +131,96 @@ _JS_WHEEL_LISTBOX = """
 """
 
 
-_JS_LISTBOX_OPTIONS = """
+# Estado do listbox, em UMA leitura. O portal renderiza DOIS placeholders como
+# filhos do proprio listbox — "Nenhum resultado" (busca terminou vazia) e
+# "carregando" (busca em voo) — e os dois tem texto, entao qualquer criterio por
+# contagem de filhos confunde "ja' respondeu" com "ainda esta' respondendo".
+# Distinguir os tres estados e' o que permite esperar o spinner e NAO esperar o
+# vazio (28/09: quatro buscas de solicitante desistiram no spinner em 6s).
+_JS_LISTBOX_ESTADO = """
 () => {
   const lb = document.querySelector('[role=listbox]');
-  if (!lb) return [];
+  if (!lb) return {estado: 'fechado', opcoes: []};
   let els = Array.from(lb.querySelectorAll('[role=option]'));
   if (!els.length) els = Array.from(lb.children);
+  const norm = (t) => t.normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+                       .toLowerCase().trim();
+  const vazio = (t) => /^nenhum resultado/.test(t);
+  const carregando = (t) => !t || /^carregando/.test(t) || /^loading/.test(t)
+                            || /^buscando/.test(t);
+  let viuVazio = false, viuCarregando = false;
   const seen = new Set(); const out = [];
-  // 'Nenhum resultado' e' o estado VAZIO do portal renderizado dentro do
-  // listbox — contar como opcao faz o erro dizer "portal ofereceu 1 opcao:
-  // Nenhum resultado", que e' o oposto do que aconteceu.
-  const vazio = (t) => /^nenhum resultado/i.test(t);
   for (const e of els) {
     const t = (e.textContent || '').trim();
-    if (t.length > 2 && !vazio(t) && !seen.has(t)) { seen.add(t); out.push(t); }
+    const n = norm(t);
+    if (vazio(n)) { viuVazio = true; continue; }
+    if (carregando(n)) { viuCarregando = true; continue; }
+    if (t.length > 2 && !seen.has(t)) { seen.add(t); out.push(t); }
   }
-  return out;
+  if (out.length) return {estado: 'ok', opcoes: out};
+  if (viuCarregando) return {estado: 'carregando', opcoes: []};
+  if (viuVazio) return {estado: 'vazio', opcoes: []};
+  return {estado: 'fechado', opcoes: []};
 }
 """
 
 
-async def _esperar_listbox(page, timeout_ms: int, passo_ms: int = 150) -> bool:
-    """Poll ate' o listbox trazer OPCAO REAL, com o MESMO teto de antes.
+async def ler_listbox(page) -> dict:
+    """Estado + opcoes do listbox. Nunca levanta (navegacao do SPA derruba o
+    evaluate no meio); nesse caso devolve 'fechado', que o poll trata como
+    "ainda nao sei"."""
+    try:
+        estado = await page.evaluate(_JS_LISTBOX_ESTADO)
+    except Exception:
+        return {"estado": "fechado", "opcoes": []}
+    return estado or {"estado": "fechado", "opcoes": []}
 
-    Trocar espera fixa por poll nao reduz o pior caso — so' sai mais cedo quando
-    o portal ja' respondeu. Com esperas cravadas, cada dropdown custava 3,8s
-    independente de tudo, e um pedido de 20 exames levava 4,2 min so' na etapa
-    de exames (reclamacao da ponta em 25/09).
 
-    O criterio de parada e' `_JS_LISTBOX_OPTIONS` — o MESMO que o chamador usa
-    para ler o resultado. Quem espera e quem le TEM que concordar sobre o que
-    conta como opcao: a primeira versao deste poll parava em
-    `listbox.children.length > 0`, e o "Nenhum resultado" do portal e' renderizado
-    DENTRO do listbox enquanto a busca ainda esta' em voo. A espera terminava em
-    ~150ms num estado que a leitura descarta, e o adapter concluia "o portal nao
-    tem esse registro" sem nunca ter visto a resposta (28/09: 4 buscas de
-    solicitante em 5s, contra 23s antes da mudanca; o portal tinha o medico).
+async def opcoes_do_listbox(page) -> list:
+    return (await ler_listbox(page)).get("opcoes") or []
 
-    Listbox vazio de verdade custa o teto inteiro — que e' o custo que existia
-    antes do poll. O ganho de tempo vem do caso de SUCESSO, que e' a norma.
+
+async def _esperar_listbox(page, timeout_ms: int, passo_ms: int = 150,
+                           teto_carregando_ms: int = 12000) -> bool:
+    """Poll ate' o listbox trazer OPCAO REAL. Tres estados, tres politicas.
+
+    - 'ok'          -> sai na hora (e' daqui que vem o ganho de tempo de 25/09).
+    - 'carregando'  -> o portal esta' respondendo: ESPERA, ate' teto_carregando_ms.
+                       O spinner e' evidencia positiva de trabalho em curso; parar
+                       nele e' concluir "nao existe" sem ter visto a resposta.
+    - 'vazio'       -> "Nenhum resultado" e' a resposta terminal: sai cedo, mas so'
+                       depois de estavel, porque o portal pinta o vazio da busca
+                       ANTERIOR por alguns frames antes de trocar pelo spinner.
+    - 'fechado'     -> nada ainda: espera ate' timeout_ms.
+
+    Historico desta funcao, que e' o proprio argumento para os tres estados:
+    `eda1623` (25/09) trocou esperas fixas por poll com criterio
+    `listbox.children.length > 0` — o "Nenhum resultado" conta como filho, entao
+    a espera acabava em ~150ms. `0c1e59d` (28/09) passou a exigir opcao real, mas
+    o filtro so' descartava "Nenhum resultado": o spinner "carregando" virou
+    opcao, e a espera continuou acabando em ~150ms. Nos dois casos o adapter
+    concluiu "o portal nao tem esse registro" sem nunca ter visto a resposta.
     """
-    for _ in range(max(1, timeout_ms // passo_ms)):
-        try:
-            if await page.evaluate(_JS_LISTBOX_OPTIONS):
-                return True
-        except Exception:
-            pass          # contexto destruido por navegacao do SPA: segue o poll
+    vazio_seguido = 0
+    gasto = 0
+    prazo = max(timeout_ms, passo_ms)
+    while gasto < prazo and gasto < teto_carregando_ms:
+        estado = (await ler_listbox(page)).get("estado")
+        if estado == "ok":
+            return True
+        if estado == "carregando":
+            vazio_seguido = 0
+            # Spinner na tela renova a paciencia (nunca alem do teto absoluto):
+            # portal lento nao pode virar "registro inexistente".
+            prazo = min(gasto + timeout_ms, teto_carregando_ms)
+        elif estado == "vazio":
+            vazio_seguido += 1
+            if vazio_seguido >= _VAZIO_ESTAVEL:
+                return False
+        else:
+            vazio_seguido = 0
         await page.wait_for_timeout(passo_ms)
+        gasto += passo_ms
     return False
 
 
@@ -248,7 +295,10 @@ async def selecionar_solicitante(page, crm: str | None, nome: str):
     proprio nome (menos confiavel: o listbox so' carrega ~10 itens).
 
     Conservador (I3): so' clica com match UNICO. Retorna ('ok'|'nenhum'|
-    'ambiguo', candidatos) — o chamador aborta para captura manual se != 'ok'.
+    'ambiguo', X) — o chamador aborta para captura manual se != 'ok'. X e' a
+    lista de candidatos quando 'ambiguo', e o relato do que o portal respondeu
+    por termo quando 'nenhum' (e' o que permite distinguir "o portal nao tem"
+    de "o portal tem e nos recusamos").
     """
     nome_norm = limpar_nome_medico(nome)
     tokens = [t for t in nome_norm.split() if len(t) >= 2]
@@ -269,11 +319,22 @@ async def selecionar_solicitante(page, crm: str | None, nome: str):
     if not termos:
         return "nenhum", []
 
+    # Registro do que o PORTAL respondeu, por termo. Sem isto a falha diz apenas
+    # "nao localizado", e tres ciclos de diagnostico (25–28/09) foram gastos
+    # adivinhando se o dropdown veio vazio, veio cheio e nos e' que recusamos, ou
+    # nem chegou a responder. Vai para o stdout e para a mensagem do operador.
+    tentativas: list[str] = []
+
     for termo in termos:
         if not await abrir_dropdown(page, "Profissional solicitante", termo):
+            tentativas.append(f"{termo!r}: dropdown nao abriu")
             continue
-        opcoes = await page.evaluate(_JS_LISTBOX_OPTIONS)
+        leitura = await ler_listbox(page)
+        opcoes = leitura.get("opcoes") or []
+        print(f"[solicitante] termo={termo!r} estado={leitura.get('estado')!r} "
+              f"opcoes={len(opcoes)}: {opcoes[:8]}", flush=True)
         if not opcoes:
+            tentativas.append(f"{termo!r}: {leitura.get('estado')}")
             continue  # termo nao trouxe lista (ex.: nome completo) -> mais curto
 
         # 1a passada EXATA. Se nada casar, 2a passada tolerante a grafia: o nome
@@ -291,8 +352,10 @@ async def selecionar_solicitante(page, crm: str | None, nome: str):
         if len(candidatos) > 1:
             return "ambiguo", candidatos  # I3: nao escolhe entre homonimos
         # 0 candidatos com este termo -> tenta o proximo (menos tokens)
+        tentativas.append(f"{termo!r}: {len(opcoes)} opcoes, nenhuma casou "
+                          f"({opcoes[:5]})")
 
-    return "nenhum", []
+    return "nenhum", tentativas
 
 
 # JS: valor do input que fica logo ABAIXO do N-esimo label com este texto.

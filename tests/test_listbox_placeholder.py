@@ -27,17 +27,24 @@ _ui = importlib.import_module("adapters.sassepe._ui")
 
 
 class _PageListbox:
-    """Portal que pinta o placeholder primeiro e responde depois de N polls."""
+    """Portal que pinta placeholder primeiro e responde depois de N polls.
 
-    def __init__(self, responde_no_poll: int, opcoes=("37499 - RODRIGO REBELLO FRANCA",)):
+    `estado_inicial` e' o que o listbox mostra enquanto a busca esta' em voo:
+    'carregando' (spinner, visto em 28/09 17:55) ou 'fechado'.
+    """
+
+    def __init__(self, responde_no_poll: int, estado_inicial="carregando",
+                 opcoes=("37499 - RODRIGO REBELLO FRANCA",)):
         self.responde_no_poll = responde_no_poll
+        self.estado_inicial = estado_inicial
         self.opcoes = list(opcoes)
         self.polls = 0
 
     async def evaluate(self, js, *a):
         self.polls += 1
-        # o adapter só pergunta uma coisa: quais são as opções REAIS
-        return self.opcoes if self.polls >= self.responde_no_poll else []
+        if self.polls >= self.responde_no_poll:
+            return {"estado": "ok", "opcoes": self.opcoes}
+        return {"estado": self.estado_inicial, "opcoes": []}
 
     async def wait_for_timeout(self, ms):
         pass
@@ -46,17 +53,50 @@ class _PageListbox:
 class TestPlaceholderNaoEncerraAEspera:
     @pytest.mark.asyncio
     async def test_espera_ate_a_resposta_real_chegar(self):
-        """Placeholder nos primeiros polls não pode encerrar a espera."""
-        page = _PageListbox(responde_no_poll=8)      # ~1,2s
+        page = _PageListbox(responde_no_poll=8)      # ~1,2s de spinner
         assert await _ui._esperar_listbox(page, 2000, passo_ms=150) is True
         assert page.polls == 8
 
     @pytest.mark.asyncio
-    async def test_vazio_de_verdade_custa_o_teto_inteiro(self):
-        """Sem resposta, o teto é o mesmo que existia antes do poll (2000ms)."""
-        page = _PageListbox(responde_no_poll=10**6)
+    async def test_spinner_renova_a_paciencia_ate_o_teto(self):
+        """"carregando" e' evidencia de que o portal esta' trabalhando. Parar
+        nele e' concluir "nao existe" sem ter visto a resposta — foi o que
+        aconteceu em 28/09 (4 buscas em 6s)."""
+        page = _PageListbox(responde_no_poll=60, estado_inicial="carregando")
+        assert await _ui._esperar_listbox(page, 2000, passo_ms=150,
+                                          teto_carregando_ms=12000) is True
+        assert page.polls == 60                      # ~9s de espera, nao 2s
+
+    @pytest.mark.asyncio
+    async def test_spinner_eterno_para_no_teto_absoluto(self):
+        page = _PageListbox(responde_no_poll=10**6, estado_inicial="carregando")
+        assert await _ui._esperar_listbox(page, 2000, passo_ms=150,
+                                          teto_carregando_ms=3000) is False
+        assert page.polls <= 3000 // 150 + 1
+
+    @pytest.mark.asyncio
+    async def test_vazio_estavel_encerra_cedo(self):
+        """"Nenhum resultado" e' resposta terminal: nao faz sentido esperar o
+        teto. Mas so' vale depois de estavel — o portal mostra o vazio da busca
+        ANTERIOR por alguns frames antes de trocar pelo spinner."""
+        page = _PageListbox(responde_no_poll=10**6, estado_inicial="vazio")
         assert await _ui._esperar_listbox(page, 2000, passo_ms=150) is False
-        assert page.polls == 2000 // 150
+        assert page.polls == _ui._VAZIO_ESTAVEL
+
+    @pytest.mark.asyncio
+    async def test_vazio_transitorio_nao_encerra(self):
+        """vazio -> carregando -> ok: o vazio do inicio nao pode decidir."""
+        class _Page:
+            def __init__(self): self.polls = 0
+            async def evaluate(self, js, *a):
+                self.polls += 1
+                if self.polls <= 2:  return {"estado": "vazio", "opcoes": []}
+                if self.polls <= 10: return {"estado": "carregando", "opcoes": []}
+                return {"estado": "ok", "opcoes": ["37499 - RODRIGO"]}
+            async def wait_for_timeout(self, ms): pass
+        page = _Page()
+        assert await _ui._esperar_listbox(page, 2000, passo_ms=150) is True
+        assert page.polls == 11
 
     @pytest.mark.asyncio
     async def test_sucesso_rapido_continua_rapido(self):
@@ -71,18 +111,24 @@ class TestCriterioUnico:
         """A regressão nasceu de dois critérios divergentes: um contava o
         placeholder como conteúdo, o outro o descartava."""
         src = inspect.getsource(_ui._esperar_listbox)
-        assert "_JS_LISTBOX_OPTIONS" in src
+        assert "ler_listbox(page)" in src
 
     def test_nao_existe_mais_predicado_por_contagem_de_filhos(self):
         """`children.length > 0` só pode sobreviver na docstring que explica a
         regressão — nunca num JS avaliado."""
         assert not hasattr(_ui, "_JS_LISTBOX_PRONTO")
+        assert not hasattr(_ui, "_JS_LISTBOX_OPTIONS")
         js = [v for k, v in vars(_ui).items()
               if k.startswith("_JS_") and isinstance(v, str)]
         assert not any("children.length > 0" in j for j in js)
 
     def test_o_js_descarta_o_placeholder(self):
-        assert "nenhum resultado" in _ui._JS_LISTBOX_OPTIONS.lower()
+        assert "nenhum resultado" in _ui._JS_LISTBOX_ESTADO.lower()
+
+    def test_o_js_descarta_o_spinner(self):
+        """Segundo placeholder, achado em 28/09 17:55: contado como opcao, ele
+        encerrava a espera com 1 'candidato' que nunca casaria."""
+        assert "carregando" in _ui._JS_LISTBOX_ESTADO.lower()
 
 
 class TestEvidenciaChegaAoHop:
@@ -120,3 +166,40 @@ class TestEvidenciaChegaAoHop:
         worker = importlib.import_module("worker")
         f = FalhaDeterministica(motivo=MotivoFalha.REDE, etapa="x")
         assert worker._evidencias_da_falha(f) == []
+
+
+class TestRelatoDoPortal:
+    """Três ciclos (25–28/09) foram gastos adivinhando o que o dropdown tinha
+    respondido, porque a falha dizia só "não localizado". O adapter passa a
+    registrar, por termo, o estado e as opções que o portal ofereceu."""
+
+    @pytest.mark.asyncio
+    async def test_nenhum_devolve_o_relato_por_termo(self, monkeypatch):
+        async def _abrir(page, label, termo, indice=0): return True
+        async def _ler(page): return {"estado": "vazio", "opcoes": []}
+        monkeypatch.setattr(_ui, "abrir_dropdown", _abrir)
+        monkeypatch.setattr(_ui, "ler_listbox", _ler)
+        status, relato = await _ui.selecionar_solicitante(
+            None, "37499", "RODRIGO REBELLO FRANCA")
+        assert status == "nenhum"
+        assert any("37499" in r and "vazio" in r for r in relato)
+
+    @pytest.mark.asyncio
+    async def test_distingue_portal_vazio_de_recusa_nossa(self, monkeypatch):
+        """Portal ofereceu nomes e NÓS é que não casamos — diagnóstico oposto."""
+        async def _abrir(page, label, termo, indice=0): return True
+        async def _ler(page):
+            return {"estado": "ok", "opcoes": ["1111 - OUTRA PESSOA",
+                                               "2222 - MAIS ALGUEM"]}
+        monkeypatch.setattr(_ui, "abrir_dropdown", _abrir)
+        monkeypatch.setattr(_ui, "ler_listbox", _ler)
+        status, relato = await _ui.selecionar_solicitante(
+            None, "37499", "RODRIGO REBELLO FRANCA")
+        assert status == "nenhum"
+        assert any("nenhuma casou" in r for r in relato)
+        assert any("OUTRA PESSOA" in r for r in relato)
+
+    def test_a_mensagem_do_operador_carrega_o_relato(self):
+        submit = importlib.import_module("adapters.sassepe.submit")
+        corpo = inspect.getsource(submit._preencher_cabecalho)
+        assert "O QUE O PORTAL RESPONDEU" in corpo

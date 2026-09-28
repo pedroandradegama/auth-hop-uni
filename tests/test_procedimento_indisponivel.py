@@ -109,8 +109,8 @@ def test_placeholder_nao_conta_como_opcao():
     listbox. Contado como opcao, o erro dizia 'portal ofereceu 1: Nenhum
     resultado' — o oposto do que ocorreu."""
     _ui = importlib.import_module("adapters.sassepe._ui")
-    assert "nenhum resultado" in _ui._JS_LISTBOX_OPTIONS.lower()
-    assert "vazio(t)" in _ui._JS_LISTBOX_OPTIONS
+    assert "nenhum resultado" in _ui._JS_LISTBOX_ESTADO.lower()
+    assert "vazio(n)" in _ui._JS_LISTBOX_ESTADO
 
 
 class TestCampoNaoPreenchido:
