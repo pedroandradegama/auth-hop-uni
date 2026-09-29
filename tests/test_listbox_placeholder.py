@@ -428,3 +428,30 @@ class TestRelatoDosCamposFixos:
         corpo = inspect.getsource(submit._preencher_cabecalho)
         assert 'f"Campo fixo nao preenchido: {label} — {porque}."' in corpo
         assert "Profissional executante fixo nao localizado — {porque}" in corpo
+
+
+class TestCboNaoClicaNoSpinner:
+    """29/set: `[cbo] indice=1: 'carregando'` em três ciclos.
+
+    `_JS_PRIMEIRA_OPCAO`, que o CBO usa, descartava só o "Nenhum resultado" —
+    então o clique caía no spinner e a ocupação do profissional ficava com lixo
+    no lugar do código. Mesmo defeito de `c7e98f6`, num caminho de código que
+    aquele commit não tocou: o CBO não passa por `_JS_LISTBOX_ESTADO`.
+    """
+
+    def test_descarta_os_dois_placeholders(self):
+        js = _ui._JS_PRIMEIRA_OPCAO.lower()
+        assert "nenhum resultado" in js
+        assert "carregando" in js
+
+    def test_usa_os_mesmos_criterios_do_estado(self):
+        """Dois filtros divergentes foi a origem da regressão de 25/09."""
+        for termo in ("nenhum resultado", "carregando", "loading", "buscando"):
+            assert termo in _ui._JS_LISTBOX_ESTADO.lower()
+            assert termo in _ui._JS_PRIMEIRA_OPCAO.lower()
+
+    def test_pula_o_placeholder_em_vez_de_parar_nele(self):
+        """O antigo olhava só `children[0]`: placeholder na primeira posição
+        devolvia null e a opção real logo abaixo era perdida."""
+        assert "children[0]" not in _ui._JS_PRIMEIRA_OPCAO
+        assert "for (const el of els)" in _ui._JS_PRIMEIRA_OPCAO

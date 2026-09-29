@@ -467,6 +467,9 @@ async def selecionar_solicitante(page, crm: str | None, nome: str):
 
     for termo in termos:
         if not await abrir_dropdown(page, "Profissional solicitante", termo):
+            print(f"[solicitante] termo={termo!r}: portal nao respondeu "
+                  f"(lista inalterada, incompativel com o termo, ou campo "
+                  f"ausente)", flush=True)
             tentativas.append(f"{termo!r}: portal nao respondeu ao termo "
                               f"(lista inalterada ou campo ausente)")
             continue
@@ -534,16 +537,32 @@ _JS_VALOR_ABAIXO_DO_LABEL = """
 """
 
 # JS: 1a opcao REAL do listbox (ignora o placeholder de lista vazia).
+# Coordenada da primeira opcao REAL do listbox. Os dois placeholders do portal
+# ("Nenhum resultado" e o spinner "carregando") sao filhos do listbox e tem
+# texto — descartar so' um deles faz o robo clicar no outro. Em 29/09 o log do
+# CBO registrou o valor gravado como 'carregando' em tres ciclos: o clique caiu
+# no spinner, e a ocupacao do profissional ficou com lixo no lugar do codigo.
+# Os criterios aqui sao os MESMOS de _JS_LISTBOX_ESTADO, de proposito.
 _JS_PRIMEIRA_OPCAO = """
 () => {
   const lb = document.querySelector('[role=listbox]');
-  if (!lb || !lb.children.length) return null;
-  const el = lb.children[0];
-  const t = (el.textContent || '').trim();
-  if (/^nenhum resultado/i.test(t)) return null;   // estado vazio, nao opcao
-  el.scrollIntoView({block: 'nearest'});
-  const r = el.getBoundingClientRect();
-  return {cx: r.x + r.width / 2, cy: r.y + r.height / 2, texto: t};
+  if (!lb) return null;
+  let els = Array.from(lb.querySelectorAll('[role=option]'));
+  if (!els.length) els = Array.from(lb.children);
+  const norm = (t) => t.normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+                       .toLowerCase().trim();
+  const vazio = (t) => /^nenhum resultado/.test(t);
+  const carregando = (t) => !t || /^carregando/.test(t) || /^loading/.test(t)
+                            || /^buscando/.test(t);
+  for (const el of els) {
+    const t = (el.textContent || '').trim();
+    const n = norm(t);
+    if (!t || t.length <= 2 || vazio(n) || carregando(n)) continue;
+    el.scrollIntoView({block: 'nearest'});
+    const r = el.getBoundingClientRect();
+    return {cx: r.x + r.width / 2, cy: r.y + r.height / 2, texto: t};
+  }
+  return null;
 }
 """
 
