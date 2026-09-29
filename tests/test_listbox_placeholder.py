@@ -203,3 +203,69 @@ class TestRelatoDoPortal:
         submit = importlib.import_module("adapters.sassepe.submit")
         corpo = inspect.getsource(submit._preencher_cabecalho)
         assert "O QUE O PORTAL RESPONDEU" in corpo
+
+
+class TestListaVelhaNaoContaComoResposta:
+    """Log de 28/09: as buscas por '37499', 'RODRIGO REBELLO FRANCA' e
+    'RODRIGO REBELLO' devolveram as MESMAS cinco linhas — a cabeça alfabética do
+    cadastro (AABENMA, AALAN, AALEC, AARAO, AARAO), ou seja, a lista sem filtro.
+    São opções reais, então passavam por 'ok' e encerravam a espera.
+
+    Efeito: a busca por CRM, a mais específica, era descartada em toda execução,
+    e o adapter decidia sempre pelo termo mais fraco (primeiro nome sozinho) —
+    que funcionou por acaso de tempo. Com dois homônimos, daria ambíguo ou
+    casamento errado de solicitante, que é violação do I3.
+    """
+
+    CABECA = ["29278 - AABENMA SILVA RIBEIRO", "245471 - AALAN SOUSA GALIAN"]
+
+    @pytest.mark.asyncio
+    async def test_lista_identica_a_anterior_nao_encerra_a_espera(self):
+        class _Page:
+            def __init__(self): self.polls = 0
+            async def evaluate(self, js, *a):
+                self.polls += 1
+                return {"estado": "ok",
+                        "opcoes": TestListaVelhaNaoContaComoResposta.CABECA}
+            async def wait_for_timeout(self, ms): pass
+        page = _Page()
+        assinatura = "|".join(self.CABECA)
+        assert await _ui._esperar_listbox(page, 2000, passo_ms=150,
+                                          teto_carregando_ms=2000,
+                                          assinatura_anterior=assinatura) is False
+        assert page.polls > 1
+
+    @pytest.mark.asyncio
+    async def test_aceita_assim_que_a_lista_muda(self):
+        class _Page:
+            def __init__(self): self.polls = 0
+            async def evaluate(self, js, *a):
+                self.polls += 1
+                if self.polls < 5:
+                    return {"estado": "ok",
+                            "opcoes": TestListaVelhaNaoContaComoResposta.CABECA}
+                return {"estado": "ok", "opcoes": ["37499 - RODRIGO REBELLO FRANCA"]}
+            async def wait_for_timeout(self, ms): pass
+        page = _Page()
+        assert await _ui._esperar_listbox(
+            page, 2000, passo_ms=150,
+            assinatura_anterior="|".join(self.CABECA)) is True
+        assert page.polls == 5
+
+    @pytest.mark.asyncio
+    async def test_sem_assinatura_anterior_qualquer_lista_serve(self):
+        """Primeira abertura, ou termo vazio (a lista sem filtro É a resposta)."""
+        class _Page:
+            async def evaluate(self, js, *a):
+                return {"estado": "ok",
+                        "opcoes": TestListaVelhaNaoContaComoResposta.CABECA}
+            async def wait_for_timeout(self, ms): pass
+        assert await _ui._esperar_listbox(_Page(), 2000, passo_ms=150) is True
+
+    def test_abrir_dropdown_reprova_o_termo_sem_resposta(self):
+        """Ler o listbox depois disso devolveria conteúdo que não corresponde ao
+        que foi pedido — e quem lê não tem como saber."""
+        src = inspect.getsource(_ui.abrir_dropdown)
+        assert "antes = await _assinatura_listbox(page)" in src
+        assert "assinatura_anterior=antes" in src
+        assert "return False" in src

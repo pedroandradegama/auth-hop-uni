@@ -38,6 +38,17 @@ class _PageFake:
             return {"lx": 0, "ly": 0, "lw": 100}
         if "WheelEvent" in js:
             return None
+        if "viuCarregando" in js:            # _JS_LISTBOX_ESTADO (tri-estado)
+            self.tentativa += 1
+            if self.placeholder or self.tentativa < self.abre:
+                return {"estado": "carregando", "opcoes": []}
+            if self.so_sem_filtro and self.filtro != "":
+                return {"estado": "vazio", "opcoes": []}
+            texto = ("225125 - MEDICO RADIOLOGISTA" if self.so_sem_filtro
+                     else "999999 - null")
+            # o filtro entra na assinatura: e' assim que o portal real muda a
+            # lista quando o termo digitado finalmente e' aplicado
+            return {"estado": "ok", "opcoes": [f"{texto} [{self.filtro}]"]}
         if "nenhum resultado" in js.lower() and "listbox" in js.lower():
             self.tentativa += 1
             if self.placeholder or self.tentativa < self.abre:

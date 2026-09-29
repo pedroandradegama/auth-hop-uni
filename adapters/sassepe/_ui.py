@@ -180,8 +180,17 @@ async def opcoes_do_listbox(page) -> list:
     return (await ler_listbox(page)).get("opcoes") or []
 
 
+async def _assinatura_listbox(page) -> str | None:
+    """Impressao digital do conteudo atual do listbox (None se fechado)."""
+    leitura = await ler_listbox(page)
+    if leitura.get("estado") == "fechado":
+        return None
+    return "|".join(leitura.get("opcoes") or []) or f"<{leitura.get('estado')}>"
+
+
 async def _esperar_listbox(page, timeout_ms: int, passo_ms: int = 150,
-                           teto_carregando_ms: int = 12000) -> bool:
+                           teto_carregando_ms: int = 12000,
+                           assinatura_anterior: str | None = None) -> bool:
     """Poll ate' o listbox trazer OPCAO REAL. Tres estados, tres politicas.
 
     - 'ok'          -> sai na hora (e' daqui que vem o ganho de tempo de 25/09).
@@ -192,6 +201,16 @@ async def _esperar_listbox(page, timeout_ms: int, passo_ms: int = 150,
                        depois de estavel, porque o portal pinta o vazio da busca
                        ANTERIOR por alguns frames antes de trocar pelo spinner.
     - 'fechado'     -> nada ainda: espera ate' timeout_ms.
+
+    `assinatura_anterior` e' o conteudo do listbox ANTES de digitar o termo. Com
+    ele, 'ok' so' vale quando a lista MUDOU — sem isso a espera aceita a lista da
+    consulta anterior, que sao opcoes reais e por isso passam por 'ok'. Medido em
+    28/09: buscas por '37499', 'RODRIGO REBELLO FRANCA' e 'RODRIGO REBELLO'
+    devolveram as mesmas cinco linhas da cabeca alfabetica do cadastro (AABENMA,
+    AALAN, AALEC, AARAO, AARAO) — a lista sem filtro. So' o ultimo termo pegou o
+    resultado certo, por acaso de tempo. Efeito pratico: a busca por CRM, a mais
+    especifica e a razao de mandarmos o CRM, era descartada em toda execucao, e o
+    adapter decidia sempre pelo termo mais fraco (primeiro nome sozinho).
 
     Historico desta funcao, que e' o proprio argumento para os tres estados:
     `eda1623` (25/09) trocou esperas fixas por poll com criterio
@@ -205,9 +224,14 @@ async def _esperar_listbox(page, timeout_ms: int, passo_ms: int = 150,
     gasto = 0
     prazo = max(timeout_ms, passo_ms)
     while gasto < prazo and gasto < teto_carregando_ms:
-        estado = (await ler_listbox(page)).get("estado")
+        leitura = await ler_listbox(page)
+        estado = leitura.get("estado")
         if estado == "ok":
-            return True
+            atual = "|".join(leitura.get("opcoes") or [])
+            if assinatura_anterior is None or atual != assinatura_anterior:
+                return True
+            # Mesma lista de antes de digitar: o filtro ainda nao chegou.
+            estado = "carregando"
         if estado == "carregando":
             vazio_seguido = 0
             # Spinner na tela renova a paciencia (nunca alem do teto absoluto):
@@ -227,8 +251,11 @@ async def _esperar_listbox(page, timeout_ms: int, passo_ms: int = 150,
 async def abrir_dropdown(page, label_text: str, search_term: str,
                          indice: int = 0) -> bool:
     """Abre o N-esimo dropdown sob `label_text` (indice resolve duplicados),
-    digita `search_term` e forca o lazy-load (WheelEvent). Retorna False se o
-    label nao existe na tela."""
+    digita `search_term` e forca o lazy-load (WheelEvent).
+
+    Retorna False quando o label nao existe na tela OU quando o portal nao
+    respondeu a ESTE termo — nos dois casos ler o listbox devolveria conteudo que
+    nao corresponde ao que foi pedido, e quem le nao tem como saber disso."""
     achou = await page.evaluate(_JS_SCROLL_LABEL, [label_text, indice])
     if not achou:
         return False
@@ -240,13 +267,19 @@ async def abrir_dropdown(page, label_text: str, search_term: str,
     await page.wait_for_timeout(500)
     await page.keyboard.press("Control+a")
     await page.wait_for_timeout(200)
+    # O conteudo que o listbox ja' mostra ANTES de digitar e' a resposta da
+    # consulta anterior (ou a lista sem filtro). Guardar a assinatura e' o que
+    # permite saber que o filtro DESTE termo chegou.
+    antes = await _assinatura_listbox(page)
     if search_term:
         await page.keyboard.type(search_term)
     else:
         # Termo vazio = SEM filtro: lista o que o portal tiver. Digitar ""
         # deixaria o texto anterior no campo e o filtro valendo.
         await page.keyboard.press("Delete")
-    await _esperar_listbox(page, 2000)
+        antes = None            # aqui a lista sem filtro E' a resposta esperada
+    if not await _esperar_listbox(page, 2000, assinatura_anterior=antes):
+        return False
     await page.evaluate(_JS_WHEEL_LISTBOX)  # REQUERIDO p/ lazy-load
     await _esperar_listbox(page, 800)
     return True
@@ -327,7 +360,8 @@ async def selecionar_solicitante(page, crm: str | None, nome: str):
 
     for termo in termos:
         if not await abrir_dropdown(page, "Profissional solicitante", termo):
-            tentativas.append(f"{termo!r}: dropdown nao abriu")
+            tentativas.append(f"{termo!r}: portal nao respondeu ao termo "
+                              f"(lista inalterada ou campo ausente)")
             continue
         leitura = await ler_listbox(page)
         opcoes = leitura.get("opcoes") or []

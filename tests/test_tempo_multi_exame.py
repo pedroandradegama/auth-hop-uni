@@ -25,12 +25,12 @@ class TestEsperaPorEvento:
     def test_abrir_dropdown_nao_usa_mais_espera_fixa_de_2s(self):
         src = inspect.getsource(_ui.abrir_dropdown)
         assert "wait_for_timeout(2000)" not in src
-        assert "_esperar_listbox(page, 2000)" in src
+        assert "_esperar_listbox(page, 2000" in src
 
     def test_o_teto_nao_mudou(self):
         """Poll não pode piorar o pior caso — só sair mais cedo."""
         src = inspect.getsource(_ui.abrir_dropdown)
-        assert "_esperar_listbox(page, 2000)" in src   # era wait fixo de 2000
+        assert "_esperar_listbox(page, 2000" in src   # era wait fixo de 2000
         assert "_esperar_listbox(page, 800)" in src    # era wait fixo de 800
 
     @pytest.mark.asyncio
