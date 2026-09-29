@@ -380,11 +380,47 @@ def _opcao_presente(opcoes: list, option_text: str) -> bool:
 async def preencher_dropdown(page, label_text: str, search_term: str,
                              option_text: str) -> bool:
     """abrir_dropdown + clicar_opcao. Retorna True so' se a opcao foi clicada."""
-    if not await abrir_dropdown(page, label_text, search_term):
-        return False
-    if not _opcao_presente(await opcoes_do_listbox(page), option_text):
-        await expandir_listbox(page, max_ciclos=6)
-    return await clicar_opcao_listbox(page, option_text)
+    ok, _ = await preencher_dropdown_detalhado(page, label_text, search_term,
+                                               option_text)
+    return ok
+
+
+async def preencher_dropdown_detalhado(page, label_text: str, search_term: str,
+                                       option_text: str,
+                                       indice: int = 0) -> tuple[bool, str]:
+    """Como `preencher_dropdown`, mas devolve tambem O QUE O PORTAL RESPONDEU.
+
+    Ate' 29/09 a falha de campo fixo dizia apenas "Campo fixo nao preenchido:
+    Regime de Atendimento" — compativel com pelo menos quatro causas diferentes
+    (dropdown nao abriu, portal nao respondeu ao termo, respondeu e a opcao
+    esperada nao estava na lista, ou estava e o clique nao gravou). Sem
+    distinguir, cada ciclo de correcao vira mais uma hipotese; foi assim que o
+    caso do solicitante consumiu tres commits antes de alguem registrar a
+    resposta do portal.
+    """
+    if not await abrir_dropdown(page, label_text, search_term, indice):
+        print(f"[campo] {label_text!r} termo={search_term!r}: portal nao "
+              f"respondeu ao termo (lista inalterada, incompativel, ou campo "
+              f"ausente na tela)", flush=True)
+        return False, (f"o portal nao respondeu a busca por {search_term!r} "
+                       f"(lista inalterada, incompativel com o termo, ou o campo "
+                       f"nao estava na tela)")
+
+    opcoes = await opcoes_do_listbox(page)
+    if not _opcao_presente(opcoes, option_text):
+        opcoes = await expandir_listbox(page, max_ciclos=6)
+    print(f"[campo] {label_text!r} termo={search_term!r} alvo={option_text!r} "
+          f"opcoes={len(opcoes)}: {opcoes[:8]}", flush=True)
+
+    if not _opcao_presente(opcoes, option_text):
+        return False, (f"o portal ofereceu {len(opcoes)} opcao(oes) para "
+                       f"{search_term!r} e nenhuma e' {option_text!r}: "
+                       f"{opcoes[:8]}")
+
+    if not await clicar_opcao_listbox(page, option_text):
+        return False, (f"{option_text!r} estava na lista mas o clique nao "
+                       f"encontrou o elemento (lista de {len(opcoes)})")
+    return True, ""
 
 
 # JS: extrai os textos das opcoes do listbox aberto (dedup).

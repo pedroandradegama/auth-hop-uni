@@ -344,12 +344,14 @@ async def _preencher_cabecalho(page, medico: str, crm_job: str | None = None):
         )
     await page.wait_for_timeout(300)
 
-    # Profissional EXECUTANTE (fixo: Pedro Andrade 21798).
-    if not await _ui.preencher_dropdown(
+    # Profissional EXECUTANTE (fixo: Pedro Andrade 21798). O alvo e' o 6o item
+    # da busca por codigo — so' aparece depois do lazy-load (ver expandir_listbox).
+    ok, porque = await _ui.preencher_dropdown_detalhado(
         page, "Profissional executante",
-        config.PROF_EXECUTANTE_NUM, config.PROF_EXECUTANTE_NOME,
-    ):
-        raise SubmitAbortado("Profissional executante fixo nao localizado.")
+        config.PROF_EXECUTANTE_NUM, config.PROF_EXECUTANTE_NOME)
+    if not ok:
+        raise SubmitAbortado(
+            f"Profissional executante fixo nao localizado — {porque}.")
     await page.wait_for_timeout(500)
 
     if not await _ui.preencher_cbo(page, indice=1):  # CBO da secao EXECUTANTE
@@ -370,8 +372,9 @@ async def _preencher_cabecalho(page, medico: str, crm_job: str | None = None):
         ("Tipo de Atendimento", config.TIPO_ATEND_BUSCA, config.TIPO_ATEND_OPCAO),
     ]
     for label, busca, opcao in fixos:
-        if not await _ui.preencher_dropdown(page, label, busca, opcao):
-            raise SubmitAbortado(f"Campo fixo nao preenchido: {label}.")
+        ok, porque = await _ui.preencher_dropdown_detalhado(page, label, busca, opcao)
+        if not ok:
+            raise SubmitAbortado(f"Campo fixo nao preenchido: {label} — {porque}.")
         await page.wait_for_timeout(300)
 
 

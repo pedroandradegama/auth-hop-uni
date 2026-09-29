@@ -321,7 +321,7 @@ class TestLazyLoadEsperado:
         assert page.wheels == 3
 
     def test_preencher_dropdown_expande_quando_o_alvo_nao_esta_na_lista(self):
-        src = inspect.getsource(_ui.preencher_dropdown)
+        src = inspect.getsource(_ui.preencher_dropdown_detalhado)
         assert "_opcao_presente" in src
         assert "expandir_listbox" in src
 
@@ -364,3 +364,67 @@ class TestCoerenciaComOTermo:
         assert await _ui._esperar_listbox(page, 900, passo_ms=150,
                                           teto_carregando_ms=900,
                                           termo="ALICE LECA") is False
+
+
+class TestRelatoDosCamposFixos:
+    """29/set, job 18982e35: o relato determinístico dizia apenas "Campo fixo
+    nao preenchido: Regime de Atendimento" — compatível com quatro causas
+    diferentes. `preencher_dropdown_detalhado` passa a dizer qual delas.
+
+    O caso do solicitante consumiu três commits antes de alguém registrar a
+    resposta do portal; os campos fixos não tinham registro nenhum.
+    """
+
+    @pytest.mark.asyncio
+    async def test_diz_quando_o_portal_nao_respondeu_ao_termo(self, monkeypatch):
+        async def _abrir(page, label, termo, indice=0): return False
+        monkeypatch.setattr(_ui, "abrir_dropdown", _abrir)
+        ok, porque = await _ui.preencher_dropdown_detalhado(
+            None, "Regime de Atendimento", "ambulatorial", "01 - Ambulatorial")
+        assert ok is False
+        assert "nao respondeu" in porque and "ambulatorial" in porque
+
+    @pytest.mark.asyncio
+    async def test_diz_o_que_o_portal_ofereceu_quando_o_alvo_falta(self, monkeypatch):
+        async def _abrir(page, label, termo, indice=0): return True
+        async def _ler(page): return {"estado": "ok", "opcoes": ["02 - Hospitalar"]}
+        async def _expandir(page, **kw): return ["02 - Hospitalar"]
+        monkeypatch.setattr(_ui, "abrir_dropdown", _abrir)
+        monkeypatch.setattr(_ui, "ler_listbox", _ler)
+        monkeypatch.setattr(_ui, "expandir_listbox", _expandir)
+        ok, porque = await _ui.preencher_dropdown_detalhado(
+            None, "Regime de Atendimento", "ambulatorial", "01 - Ambulatorial")
+        assert ok is False
+        assert "02 - Hospitalar" in porque
+        assert "01 - Ambulatorial" in porque
+
+    @pytest.mark.asyncio
+    async def test_distingue_alvo_presente_mas_clique_falho(self, monkeypatch):
+        async def _abrir(page, label, termo, indice=0): return True
+        async def _ler(page): return {"estado": "ok", "opcoes": ["01 - Ambulatorial"]}
+        async def _clicar(page, opt): return False
+        monkeypatch.setattr(_ui, "abrir_dropdown", _abrir)
+        monkeypatch.setattr(_ui, "ler_listbox", _ler)
+        monkeypatch.setattr(_ui, "clicar_opcao_listbox", _clicar)
+        ok, porque = await _ui.preencher_dropdown_detalhado(
+            None, "Regime de Atendimento", "ambulatorial", "01 - Ambulatorial")
+        assert ok is False
+        assert "clique" in porque
+
+    @pytest.mark.asyncio
+    async def test_caminho_feliz_nao_tem_porque(self, monkeypatch):
+        async def _abrir(page, label, termo, indice=0): return True
+        async def _ler(page): return {"estado": "ok", "opcoes": ["01 - Ambulatorial"]}
+        async def _clicar(page, opt): return True
+        monkeypatch.setattr(_ui, "abrir_dropdown", _abrir)
+        monkeypatch.setattr(_ui, "ler_listbox", _ler)
+        monkeypatch.setattr(_ui, "clicar_opcao_listbox", _clicar)
+        ok, porque = await _ui.preencher_dropdown_detalhado(
+            None, "Regime de Atendimento", "ambulatorial", "01 - Ambulatorial")
+        assert ok is True and porque == ""
+
+    def test_a_falha_de_campo_fixo_carrega_o_motivo(self):
+        submit = importlib.import_module("adapters.sassepe.submit")
+        corpo = inspect.getsource(submit._preencher_cabecalho)
+        assert 'f"Campo fixo nao preenchido: {label} — {porque}."' in corpo
+        assert "Profissional executante fixo nao localizado — {porque}" in corpo
