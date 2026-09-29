@@ -27,6 +27,7 @@ import httpx
 
 import config
 import callback
+import outbox
 from schemas import JobPreAutorizacao
 from agente import (AgenteFallback, MOTIVOS_AGENTE, MOTIVOS_REQUER_HUMANO,
                     ContextoSeguranca,
@@ -236,18 +237,19 @@ async def _processar(job: JobPreAutorizacao):
             "convenio": job.convenio,
             **resultado,
         }
-        try:
-            await callback.enviar(payload)
-        except Exception:
-            import traceback
-            print("[callback-falhou]", traceback.format_exc(), flush=True)
+        # O retorno NAO pode ser descartado: `callback.enviar` devolve
+        # {"ok": False} para 4xx/5xx sem levantar. Quando o submit foi
+        # irreversivel, este payload carrega o protocolo da guia ja' emitida —
+        # perde-lo faz o HOP reprocessar e emitir guia duplicada (I1).
+        await outbox.entregar(callback.enviar, "submit_result", payload)
 
         # Costura C: telemetria do agente (best-effort; nunca derruba o circuito).
         if res_agente is not None:
             try:
                 trace = res_agente.para_agent_trace(
                     org_id=job.org_id, convenio=job.convenio)
-                await callback.enviar_agent_trace(trace)
+                await outbox.entregar(callback.enviar_agent_trace,
+                                      "agent_trace", trace)
             except Exception:
                 import traceback
                 print("[agent-trace-falhou]", traceback.format_exc(), flush=True)
@@ -294,11 +296,7 @@ async def _devolver_job_invalido(bruto: dict, erro: Exception) -> None:
         "mensagem": (f"Job rejeitado pelo worker antes de abrir o portal "
                      f"(dados invalidos): {detalhe}"),
     }
-    try:
-        await callback.enviar(payload)
-    except Exception:
-        import traceback
-        print("[callback-falhou]", traceback.format_exc(), flush=True)
+    await outbox.entregar(callback.enviar, "submit_result", payload)
 
 
 async def _pollar_uma_vez(client: httpx.AsyncClient) -> bool:
@@ -401,11 +399,7 @@ async def _pollar_verificacao_uma_vez(client: httpx.AsyncClient) -> bool:
         resultado = _erro_verif("transitorio", f"falha no worker: {e}")
 
     payload = {"job_id": job_id, "resultado": resultado}
-    try:
-        await callback.enviar_verificacao(payload)
-    except Exception:
-        import traceback
-        print(f"[verif {job_id}] callback-falhou: {traceback.format_exc()}", flush=True)
+    await outbox.entregar(callback.enviar_verificacao, "verificacao", payload)
     return True
 
 
@@ -442,12 +436,26 @@ async def _drenar_fila(client, pollar, lote: int, restante: int) -> int:
     return n
 
 
+def _rotas_outbox() -> dict:
+    """tipo do callback -> corrotina que o entrega."""
+    return {
+        "submit_result": callback.enviar,
+        "verificacao": callback.enviar_verificacao,
+        "agent_trace": callback.enviar_agent_trace,
+    }
+
+
 async def drenar(max_jobs: int = 50):
     """Modo CRON: acorda, intercala SUBMITS e VERIFICACOES ate' esvaziar as filas
     (ou o teto `max_jobs`), e encerra. Sem daemon, sem estado entre execucoes.
     A verificacao so' roda se VERIFICACAO_HABILITADA=true (senao jobs reais
     virariam erro/estrutural e disparariam o circuit breaker do HOP)."""
     print(">> drenar imag-autorizador iniciado (cron)", flush=True)
+    # ANTES de puxar job novo: o que ficou pendente do ciclo anterior. Callback
+    # perdido vale mais que job novo — pode ser o protocolo de uma guia emitida.
+    reenviados = await outbox.reenviar_pendentes(_rotas_outbox())
+    if reenviados:
+        print(f">> outbox: {reenviados} callback(s) reentregue(s)", flush=True)
     verif_on = config.verificacao_habilitada()
     lote = config.VERIFICACAO_LOTE
     total_s = total_v = 0

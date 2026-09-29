@@ -158,3 +158,6 @@ def uf_conselho(uf_do_job: str | None = None) -> str:
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SCREENSHOTS_DIR = os.path.join(BASE_DIR, "Solicitacoes")
 UPLOADS_DIR = os.path.join(BASE_DIR, "uploads")
+# Callbacks que nao foram aceitos pelo HOP ficam aqui ate' serem
+# reentregues. Disco, nao memoria: o modo cron encerra o processo.
+OUTBOX_DIR = os.path.join(BASE_DIR, "outbox")
