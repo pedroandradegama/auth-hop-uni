@@ -78,33 +78,6 @@ async def _baixar_anexos(anexos, pasta: str) -> list[str]:
     return caminhos
 
 
-def _mapear_resultado_agente(res: "ResultadoAgente") -> dict:
-    """Traduz ResultadoAgente -> dict submit_result (contrato inalterado).
-    CONCLUIDO -> protocolado; REQUER_HUMANO/RESULTADO_INCERTO -> requer_humano
-    com requer_captura_manual (NUNCA re-enfileira; risco de guia dupla)."""
-    if res.status == ResultadoStatus.CONCLUIDO:
-        return {"status": "protocolado", "numero_protocolo": res.protocolo,
-                "evidencias": [],
-                "mensagem": res.diagnostico or "Concluido pelo agente."}
-    # REQUER_HUMANO e RESULTADO_INCERTO: escala, sem re-fila.
-    return {"status": "requer_humano", "numero_protocolo": None,
-            "requer_captura_manual": True, "evidencias": [],
-            "mensagem": res.diagnostico or "Escalado pelo agente."}
-
-
-def _montar_job_agente(job: JobPreAutorizacao, dados: dict,
-                       caminhos: list[str]) -> dict:
-    """Dict do job entregue ao agente de fallback. Inclui crm (o agente re-monta
-    o formulario do zero na page fresh — sem crm nao reconstroi CONNECTA)."""
-    return {
-        "job_id": job.job_id, "convenio": job.convenio,
-        "carteirinha": job.carteirinha, "cpf": job.cpf,
-        "medico": job.medico, "crm": job.crm, "paciente_nome": job.paciente_nome,
-        "codigos": dados["codigos"],
-        "anexos": [{"nome": os.path.basename(p), "path": p} for p in caminhos],
-    }
-
-
 def _evidencias_da_falha(falha: FalhaDeterministica) -> list[dict]:
     """O screenshot do instante do erro, no formato que o HOP exibe.
 
@@ -118,6 +91,60 @@ def _evidencias_da_falha(falha: FalhaDeterministica) -> list[dict]:
         return []
     return [{"etapa": falha.etapa, "screenshot_path": falha.screenshot_path,
              "motivo": falha.motivo.value}]
+
+
+def _relato_determinista(falha: "FalhaDeterministica") -> str:
+    """O que o robo deterministico fez e onde parou, em uma frase."""
+    partes = [falha.detalhe or str(falha)]
+    if falha.etapa:
+        partes.append(f"etapa={falha.etapa}")
+    if falha.url:
+        partes.append(f"url={falha.url}")
+    return " | ".join(partes)
+
+
+def _mapear_resultado_agente(res: "ResultadoAgente",
+                             falha: "FalhaDeterministica | None" = None) -> dict:
+    """Traduz ResultadoAgente -> dict submit_result (contrato inalterado).
+    CONCLUIDO -> protocolado; REQUER_HUMANO/RESULTADO_INCERTO -> requer_humano
+    com requer_captura_manual (NUNCA re-enfileira; risco de guia dupla).
+
+    O diagnostico do agente NAO substitui o relato deterministico: ele vem
+    depois, rotulado como hipotese. O agente reconstroi o formulario do zero
+    numa page nova e falha por conta propria com frequencia — em 29/09 ele
+    reportou "o campo de CPF nao fica interativo em 12s" como causa raiz de um
+    job cujo robo deterministico ja' tinha passado do CPF. Quando a mensagem do
+    agente ocupa o lugar do relato, o operador perde a unica frase verificada e
+    age sobre hipotese (abrir chamado com o convenio, checar rate-limit).
+    """
+    evid = _evidencias_da_falha(falha) if falha else []
+    if res.status == ResultadoStatus.CONCLUIDO:
+        return {"status": "protocolado", "numero_protocolo": res.protocolo,
+                "evidencias": evid,
+                "mensagem": res.diagnostico or "Concluido pelo agente."}
+    # REQUER_HUMANO e RESULTADO_INCERTO: escala, sem re-fila.
+    hipotese = res.diagnostico or "Escalado pelo agente."
+    mensagem = hipotese if falha is None else (
+        f"RELATO DO ROBO DETERMINISTICO (o que de fato aconteceu): "
+        f"{_relato_determinista(falha)}\n\n"
+        f"HIPOTESE DO AGENTE DE RECUPERACAO (nao verificada; ele refaz o "
+        f"formulario do zero e pode falhar por conta propria): {hipotese}")
+    return {"status": "requer_humano", "numero_protocolo": None,
+            "requer_captura_manual": True, "evidencias": evid,
+            "mensagem": mensagem}
+
+
+def _montar_job_agente(job: JobPreAutorizacao, dados: dict,
+                       caminhos: list[str]) -> dict:
+    """Dict do job entregue ao agente de fallback. Inclui crm (o agente re-monta
+    o formulario do zero na page fresh — sem crm nao reconstroi CONNECTA)."""
+    return {
+        "job_id": job.job_id, "convenio": job.convenio,
+        "carteirinha": job.carteirinha, "cpf": job.cpf,
+        "medico": job.medico, "crm": job.crm, "paciente_nome": job.paciente_nome,
+        "codigos": dados["codigos"],
+        "anexos": [{"nome": os.path.basename(p), "path": p} for p in caminhos],
+    }
 
 
 async def _rodar_agente(job: JobPreAutorizacao, dados: dict,
@@ -141,7 +168,7 @@ async def _rodar_agente(job: JobPreAutorizacao, dados: dict,
         res = await agente.executar(job_agente, page, falha, ctx)
     print(f"[agente] job {job.job_id} -> {res.status.value} "
           f"({res.passos_executados} passos, ${res.custo.custo_usd:.4f})", flush=True)
-    return _mapear_resultado_agente(res), res
+    return _mapear_resultado_agente(res, falha), res
 
 
 async def _processar(job: JobPreAutorizacao):
