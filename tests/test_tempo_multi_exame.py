@@ -23,20 +23,20 @@ submit = importlib.import_module("adapters.sassepe.submit")
 
 class TestEsperaPorEvento:
     def test_abrir_dropdown_nao_usa_mais_espera_fixa_de_2s(self):
-        src = inspect.getsource(_ui.abrir_dropdown)
+        src = inspect.getsource(_ui.abrir_dropdown_tipado)
         assert "wait_for_timeout(2000)" not in src
         assert "_esperar_listbox(page, 2000" in src
 
     def test_o_teto_nao_mudou(self):
         """Poll não pode piorar o pior caso — só sair mais cedo."""
-        src = inspect.getsource(_ui.abrir_dropdown)
+        src = inspect.getsource(_ui.abrir_dropdown_tipado)
         assert "_esperar_listbox(page, 2000" in src   # era wait fixo de 2000
 
     def test_o_wait_pos_wheel_virou_espera_pelo_lazy_load(self):
         """O `wait_for_timeout(800)` original dava tempo do lote seguinte
         chegar; o poll que o substituiu retornava na hora (já havia opções na
         tela) e a lista travava nos 5 primeiros — 29/09, executante fixo."""
-        src = inspect.getsource(_ui.abrir_dropdown)
+        src = inspect.getsource(_ui.abrir_dropdown_tipado)
         assert "expandir_listbox(page, max_ciclos=1, timeout_ms=800)" in src
 
     @pytest.mark.asyncio

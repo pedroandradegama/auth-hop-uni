@@ -41,14 +41,24 @@ class _PageFake:
         if "viuCarregando" in js:            # _JS_LISTBOX_ESTADO (tri-estado)
             self.tentativa += 1
             if self.placeholder or self.tentativa < self.abre:
-                return {"estado": "carregando", "opcoes": []}
+                return {"estado": "carregando", "opcoes": [], "indices": []}
             if self.so_sem_filtro and self.filtro != "":
-                return {"estado": "vazio", "opcoes": []}
+                return {"estado": "vazio", "opcoes": [], "indices": []}
             texto = ("225125 - MEDICO RADIOLOGISTA" if self.so_sem_filtro
                      else "999999 - null")
             # o filtro entra na assinatura: e' assim que o portal real muda a
             # lista quando o termo digitado finalmente e' aplicado
-            return {"estado": "ok", "opcoes": [f"{texto} [{self.filtro}]"]}
+            # indice 1: o portal pinta o placeholder ANTES da opcao real, e a
+            # coordenada tem que vir do indice classificado, nao de children[0]
+            return {"estado": "ok", "opcoes": [f"{texto} [{self.filtro}]"],
+                    "indices": [1]}
+        if "scrollIntoView({block: 'nearest'})" in js:   # _JS_COORD_POR_INDICE
+            indice = a[0] if a else 0
+            if indice != 1:            # placeholder; clicar aqui era o bug
+                return None
+            texto = ("225125 - MEDICO RADIOLOGISTA" if self.so_sem_filtro
+                     else "999999 - null")
+            return {"cx": 5, "cy": 5, "texto": texto}
         if "nenhum resultado" in js.lower() and "listbox" in js.lower():
             self.tentativa += 1
             if self.placeholder or self.tentativa < self.abre:

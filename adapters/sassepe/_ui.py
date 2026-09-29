@@ -19,6 +19,8 @@ clicar + digitar pelo teclado (page.keyboard), como aqui.
 """
 import difflib
 import unicodedata
+from dataclasses import dataclass
+from enum import Enum
 
 # Tolerancia a erro de grafia no nome do medico (ver casa_tokens). 0.82 aceita
 # letra transposta e troca de uma letra em sobrenome de tamanho normal, e recusa
@@ -34,6 +36,37 @@ LIMIAR_FUZZY = 0.82
 # Abaixo disto, exigimos casamento EXATO. Token curto tem pouca informacao e
 # fuzzy nele casa quase tudo ("LUZ" x "CRUZ" = 0.86).
 MIN_TOKEN_FUZZY = 5
+
+
+class MotivoCampo(str, Enum):
+    """Por que um dropdown do formulario nao ficou preenchido.
+
+    Ate' 29/09 tudo isso virava `False` e, no chamador, `SubmitAbortado` ->
+    `ESTADO_INESPERADO` -> agente de fallback. Cinco situacoes com tratamento
+    diferente recebiam a mesma resposta: o agente era acionado para casos que
+    ele nao resolve (custo medido em 24h: 25 fallbacks, 192 passos, US$ 0,96),
+    e o operador lia "campo nao preenchido" sem saber qual delas ocorreu.
+    """
+    OK = "ok"
+    CAMPO_AUSENTE = "campo_ausente"              # label nao esta' na tela
+    SEM_RESPOSTA = "sem_resposta"                # digitou e o portal nao respondeu
+    RESPOSTA_INCOERENTE = "resposta_incoerente"  # respondeu outra consulta
+    OPCAO_AUSENTE = "opcao_ausente"              # respondeu, e o alvo nao esta' la'
+    CLIQUE_SEM_EFEITO = "clique_sem_efeito"      # alvo na lista, clique nao pegou
+
+
+@dataclass(frozen=True)
+class ResultadoCampo:
+    motivo: MotivoCampo
+    detalhe: str = ""
+    opcoes: tuple = ()
+
+    @property
+    def ok(self) -> bool:
+        return self.motivo is MotivoCampo.OK
+
+    def __bool__(self) -> bool:   # `if not resultado:` continua legivel
+        return self.ok
 
 
 def _norm(s: str) -> str:
@@ -137,30 +170,58 @@ _JS_WHEEL_LISTBOX = """
 # contagem de filhos confunde "ja' respondeu" com "ainda esta' respondendo".
 # Distinguir os tres estados e' o que permite esperar o spinner e NAO esperar o
 # vazio (28/09: quatro buscas de solicitante desistiram no spinner em 6s).
+# ── Fonte UNICA de "o que e' opcao real" ──────────────────────────────────────
+# O portal renderiza dois placeholders como filhos do listbox ("Nenhum
+# resultado" e o spinner "carregando"). Tres copias divergentes deste criterio
+# produziram tres defeitos em cinco dias:
+#   25/09  o poll parava em `children.length > 0`    -> placeholder encerrava a espera
+#   28/09  o filtro descartava so' "Nenhum resultado" -> o spinner virou opcao
+#   29/09  `_JS_PRIMEIRA_OPCAO` tinha a sua propria copia -> o CBO clicou no spinner
+# Agora ha' um fragmento so'. Quem precisa de coordenada usa o INDICE devolvido
+# aqui, e o JS de coordenada nao tem logica de filtro nenhuma.
+_JS_ELS = """
+  const lb = document.querySelector('[role=listbox]');
+  let els = lb ? Array.from(lb.querySelectorAll('[role=option]')) : null;
+  if (els !== null && !els.length) els = Array.from(lb.children);
+"""
+
 _JS_LISTBOX_ESTADO = """
 () => {
-  const lb = document.querySelector('[role=listbox]');
-  if (!lb) return {estado: 'fechado', opcoes: []};
-  let els = Array.from(lb.querySelectorAll('[role=option]'));
-  if (!els.length) els = Array.from(lb.children);
+""" + _JS_ELS + """
+  if (els === null) return {estado: 'fechado', opcoes: [], indices: []};
   const norm = (t) => t.normalize('NFD').replace(/[\u0300-\u036f]/g, '')
                        .toLowerCase().trim();
   const vazio = (t) => /^nenhum resultado/.test(t);
   const carregando = (t) => !t || /^carregando/.test(t) || /^loading/.test(t)
                             || /^buscando/.test(t);
   let viuVazio = false, viuCarregando = false;
-  const seen = new Set(); const out = [];
-  for (const e of els) {
-    const t = (e.textContent || '').trim();
+  const seen = new Set(); const out = []; const idx = [];
+  for (let i = 0; i < els.length; i++) {
+    const t = (els[i].textContent || '').trim();
     const n = norm(t);
     if (vazio(n)) { viuVazio = true; continue; }
     if (carregando(n)) { viuCarregando = true; continue; }
-    if (t.length > 2 && !seen.has(t)) { seen.add(t); out.push(t); }
+    if (t.length > 2 && !seen.has(t)) { seen.add(t); out.push(t); idx.push(i); }
   }
-  if (out.length) return {estado: 'ok', opcoes: out};
-  if (viuCarregando) return {estado: 'carregando', opcoes: []};
-  if (viuVazio) return {estado: 'vazio', opcoes: []};
-  return {estado: 'fechado', opcoes: []};
+  if (out.length) return {estado: 'ok', opcoes: out, indices: idx};
+  if (viuCarregando) return {estado: 'carregando', opcoes: [], indices: []};
+  if (viuVazio) return {estado: 'vazio', opcoes: [], indices: []};
+  return {estado: 'fechado', opcoes: [], indices: []};
+}
+"""
+
+# Coordenada do N-esimo elemento do listbox. SEM criterio de filtro: recebe o
+# indice que `_JS_LISTBOX_ESTADO` ja' classificou como opcao real.
+_JS_COORD_POR_INDICE = """
+(i) => {
+""" + _JS_ELS + """
+  if (els === null) return null;
+  const el = els[i];
+  if (!el) return null;
+  el.scrollIntoView({block: 'nearest'});
+  const r = el.getBoundingClientRect();
+  return {cx: r.x + r.width / 2, cy: r.y + r.height / 2,
+          texto: (el.textContent || '').trim()};
 }
 """
 
@@ -172,8 +233,8 @@ async def ler_listbox(page) -> dict:
     try:
         estado = await page.evaluate(_JS_LISTBOX_ESTADO)
     except Exception:
-        return {"estado": "fechado", "opcoes": []}
-    return estado or {"estado": "fechado", "opcoes": []}
+        return {"estado": "fechado", "opcoes": [], "indices": []}
+    return estado or {"estado": "fechado", "opcoes": [], "indices": []}
 
 
 async def opcoes_do_listbox(page) -> list:
@@ -276,19 +337,27 @@ async def _esperar_listbox(page, timeout_ms: int, passo_ms: int = 150,
 
 async def abrir_dropdown(page, label_text: str, search_term: str,
                          indice: int = 0) -> bool:
+    """Compatibilidade: True apenas quando o portal respondeu AO TERMO."""
+    return (await abrir_dropdown_tipado(page, label_text, search_term,
+                                        indice)) is MotivoCampo.OK
+
+
+async def abrir_dropdown_tipado(page, label_text: str, search_term: str,
+                                indice: int = 0) -> MotivoCampo:
     """Abre o N-esimo dropdown sob `label_text` (indice resolve duplicados),
     digita `search_term` e forca o lazy-load (WheelEvent).
 
-    Retorna False quando o label nao existe na tela OU quando o portal nao
-    respondeu a ESTE termo — nos dois casos ler o listbox devolveria conteudo que
-    nao corresponde ao que foi pedido, e quem le nao tem como saber disso."""
+    Distingue "o campo nem esta' na tela" de "esta', digitei, e o portal nao
+    respondeu" de "respondeu com a lista de outra consulta". As tres tinham o
+    mesmo retorno `False`, e o chamador as mandava todas para o agente.
+    """
     achou = await page.evaluate(_JS_SCROLL_LABEL, [label_text, indice])
     if not achou:
-        return False
+        return MotivoCampo.CAMPO_AUSENTE
     await page.wait_for_timeout(300)
     rect = await page.evaluate(_JS_RECT_LABEL, [label_text, indice])  # rect fresco
     if not rect:
-        return False
+        return MotivoCampo.CAMPO_AUSENTE
     await page.mouse.click(rect["lx"] + rect["lw"] / 2, rect["ly"] + 35)
     await page.wait_for_timeout(500)
     await page.keyboard.press("Control+a")
@@ -306,12 +375,18 @@ async def abrir_dropdown(page, label_text: str, search_term: str,
         antes = None            # aqui a lista sem filtro E' a resposta esperada
     if not await _esperar_listbox(page, 2000, assinatura_anterior=antes,
                                   termo=search_term or None):
-        return False
+        # A lista pode ter ficado parada (portal mudo) ou ter vindo com conteudo
+        # que nao corresponde ao termo. A leitura final diz qual dos dois.
+        leitura = await ler_listbox(page)
+        if (leitura.get("estado") == "ok" and search_term
+                and not opcoes_coerentes(leitura.get("opcoes") or [], search_term)):
+            return MotivoCampo.RESPOSTA_INCOERENTE
+        return MotivoCampo.SEM_RESPOSTA
     # Um ciclo de lazy-load no caminho comum: mesmo teto do wait fixo de
     # 800ms que existia antes do poll. Quem precisa de mais (alvo fora dos
     # primeiros lotes) expande de novo, so' nesse caso.
     await expandir_listbox(page, max_ciclos=1, timeout_ms=800)
-    return True
+    return MotivoCampo.OK
 
 
 async def expandir_listbox(page, max_ciclos: int = 4, passo_ms: int = 150,
@@ -348,27 +423,48 @@ async def expandir_listbox(page, max_ciclos: int = 4, passo_ms: int = 150,
     return opcoes
 
 
-async def clicar_opcao_listbox(page, option_text: str) -> bool:
-    """Clica a opcao do listbox cujo texto bate (exato; fallback 'includes')."""
-    coord = await page.evaluate(
-        """(opt) => {
-          let el = Array.from(
-              document.querySelectorAll('[role=listbox] > *, [role=option]'))
-            .find(e => e.textContent.trim() === opt);
-          if (!el) el = Array.from(document.querySelectorAll('[role=listbox] > *'))
-            .find(e => e.textContent.trim().includes(opt));
-          if (!el) return null;
-          el.scrollIntoView({block: 'nearest'});
-          const r = el.getBoundingClientRect();
-          return {cx: r.x + r.width / 2, cy: r.y + r.height / 2};
-        }""",
-        option_text,
-    )
+async def _clicar_indice(page, indice: int, espera_ms: int = 800) -> str | None:
+    """Clica o elemento de `indice` do listbox. Devolve o texto clicado."""
+    coord = await page.evaluate(_JS_COORD_POR_INDICE, indice)
     if not coord:
-        return False
+        return None
     await page.mouse.click(coord["cx"], coord["cy"])
-    await page.wait_for_timeout(800)
-    return True
+    await page.wait_for_timeout(espera_ms)
+    return coord.get("texto")
+
+
+async def clicar_opcao_listbox(page, option_text: str) -> bool:
+    """Clica a opcao cujo texto bate (exato; fallback 'contem').
+
+    A escolha sai de `ler_listbox` — a MESMA leitura que classifica placeholder.
+    A versao anterior tinha o proprio querySelector e nenhum filtro: o fallback
+    'contem' podia casar um placeholder com termo curto.
+    """
+    leitura = await ler_listbox(page)
+    opcoes = leitura.get("opcoes") or []
+    indices = leitura.get("indices") or []
+    alvo = (option_text or "").strip()
+    escolha = next((i for i, o in enumerate(opcoes) if o.strip() == alvo), None)
+    if escolha is None:
+        escolha = next((i for i, o in enumerate(opcoes) if alvo and alvo in o), None)
+    if escolha is None or escolha >= len(indices):
+        return False
+    return await _clicar_indice(page, indices[escolha]) is not None
+
+
+async def clicar_primeira_opcao(page) -> str | None:
+    """Clica a primeira opcao REAL. Devolve o texto, ou None se nao havia.
+
+    E' o que o CBO precisa (o portal filtra a ocupacao pelo profissional, entao
+    a lista costuma ter um item so'). Antes disso o CBO tinha `_JS_PRIMEIRA_OPCAO`,
+    uma copia propria do criterio — que em 29/09 clicou no spinner e gravou
+    'carregando' no campo obrigatorio.
+    """
+    leitura = await ler_listbox(page)
+    indices = leitura.get("indices") or []
+    if not indices:
+        return None
+    return await _clicar_indice(page, indices[0])
 
 
 def _opcao_presente(opcoes: list, option_text: str) -> bool:
@@ -380,15 +476,15 @@ def _opcao_presente(opcoes: list, option_text: str) -> bool:
 async def preencher_dropdown(page, label_text: str, search_term: str,
                              option_text: str) -> bool:
     """abrir_dropdown + clicar_opcao. Retorna True so' se a opcao foi clicada."""
-    ok, _ = await preencher_dropdown_detalhado(page, label_text, search_term,
-                                               option_text)
-    return ok
+    return bool(await preencher_dropdown_detalhado(page, label_text,
+                                                   search_term, option_text))
 
 
 async def preencher_dropdown_detalhado(page, label_text: str, search_term: str,
                                        option_text: str,
-                                       indice: int = 0) -> tuple[bool, str]:
-    """Como `preencher_dropdown`, mas devolve tambem O QUE O PORTAL RESPONDEU.
+                                       indice: int = 0) -> ResultadoCampo:
+    """Como `preencher_dropdown`, mas devolve POR QUE nao deu e o que o portal
+    ofereceu (ver `MotivoCampo`).
 
     Ate' 29/09 a falha de campo fixo dizia apenas "Campo fixo nao preenchido:
     Regime de Atendimento" — compativel com pelo menos quatro causas diferentes
@@ -398,13 +494,20 @@ async def preencher_dropdown_detalhado(page, label_text: str, search_term: str,
     caso do solicitante consumiu tres commits antes de alguem registrar a
     resposta do portal.
     """
-    if not await abrir_dropdown(page, label_text, search_term, indice):
-        print(f"[campo] {label_text!r} termo={search_term!r}: portal nao "
-              f"respondeu ao termo (lista inalterada, incompativel, ou campo "
-              f"ausente na tela)", flush=True)
-        return False, (f"o portal nao respondeu a busca por {search_term!r} "
-                       f"(lista inalterada, incompativel com o termo, ou o campo "
-                       f"nao estava na tela)")
+    motivo = await abrir_dropdown_tipado(page, label_text, search_term, indice)
+    if motivo is not MotivoCampo.OK:
+        print(f"[campo] {label_text!r} termo={search_term!r}: {motivo.value}",
+              flush=True)
+        textos = {
+            MotivoCampo.CAMPO_AUSENTE:
+                f"o campo {label_text!r} nao estava na tela",
+            MotivoCampo.SEM_RESPOSTA:
+                f"o portal nao respondeu a busca por {search_term!r}",
+            MotivoCampo.RESPOSTA_INCOERENTE:
+                f"o portal devolveu uma lista que nao corresponde a "
+                f"{search_term!r} (resposta de outra consulta)",
+        }
+        return ResultadoCampo(motivo, textos.get(motivo, motivo.value))
 
     opcoes = await opcoes_do_listbox(page)
     if not _opcao_presente(opcoes, option_text):
@@ -413,14 +516,19 @@ async def preencher_dropdown_detalhado(page, label_text: str, search_term: str,
           f"opcoes={len(opcoes)}: {opcoes[:8]}", flush=True)
 
     if not _opcao_presente(opcoes, option_text):
-        return False, (f"o portal ofereceu {len(opcoes)} opcao(oes) para "
-                       f"{search_term!r} e nenhuma e' {option_text!r}: "
-                       f"{opcoes[:8]}")
+        return ResultadoCampo(
+            MotivoCampo.OPCAO_AUSENTE,
+            f"o portal ofereceu {len(opcoes)} opcao(oes) para {search_term!r} "
+            f"e nenhuma e' {option_text!r}: {opcoes[:8]}",
+            tuple(opcoes))
 
     if not await clicar_opcao_listbox(page, option_text):
-        return False, (f"{option_text!r} estava na lista mas o clique nao "
-                       f"encontrou o elemento (lista de {len(opcoes)})")
-    return True, ""
+        return ResultadoCampo(
+            MotivoCampo.CLIQUE_SEM_EFEITO,
+            f"{option_text!r} estava na lista mas o clique nao encontrou o "
+            f"elemento (lista de {len(opcoes)})",
+            tuple(opcoes))
+    return ResultadoCampo(MotivoCampo.OK, "", tuple(opcoes))
 
 
 # JS: extrai os textos das opcoes do listbox aberto (dedup).
@@ -537,34 +645,6 @@ _JS_VALOR_ABAIXO_DO_LABEL = """
 """
 
 # JS: 1a opcao REAL do listbox (ignora o placeholder de lista vazia).
-# Coordenada da primeira opcao REAL do listbox. Os dois placeholders do portal
-# ("Nenhum resultado" e o spinner "carregando") sao filhos do listbox e tem
-# texto — descartar so' um deles faz o robo clicar no outro. Em 29/09 o log do
-# CBO registrou o valor gravado como 'carregando' em tres ciclos: o clique caiu
-# no spinner, e a ocupacao do profissional ficou com lixo no lugar do codigo.
-# Os criterios aqui sao os MESMOS de _JS_LISTBOX_ESTADO, de proposito.
-_JS_PRIMEIRA_OPCAO = """
-() => {
-  const lb = document.querySelector('[role=listbox]');
-  if (!lb) return null;
-  let els = Array.from(lb.querySelectorAll('[role=option]'));
-  if (!els.length) els = Array.from(lb.children);
-  const norm = (t) => t.normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-                       .toLowerCase().trim();
-  const vazio = (t) => /^nenhum resultado/.test(t);
-  const carregando = (t) => !t || /^carregando/.test(t) || /^loading/.test(t)
-                            || /^buscando/.test(t);
-  for (const el of els) {
-    const t = (el.textContent || '').trim();
-    const n = norm(t);
-    if (!t || t.length <= 2 || vazio(n) || carregando(n)) continue;
-    el.scrollIntoView({block: 'nearest'});
-    const r = el.getBoundingClientRect();
-    return {cx: r.x + r.width / 2, cy: r.y + r.height / 2, texto: t};
-  }
-  return null;
-}
-"""
 
 
 async def valor_do_campo(page, label_text: str, indice: int = 0):
@@ -591,9 +671,10 @@ async def preencher_cbo(page, indice: int = 0, tentativas: int = 5,
     `indice` escolhe a secao: 0 = Contratado solicitante, 1 = executante (ha'
     DUAS labels 'Código CBO' identicas na pagina).
 
-    Sucesso = clicou numa opcao REAL do listbox (o placeholder 'Nenhum
-    resultado' e' descartado), com re-tentativa enquanto a lista carrega — o CBO
-    do executante so' popula depois que o profissional e' selecionado.
+    Sucesso = clicou numa opcao REAL do listbox — "real" definido no MESMO lugar
+    que o resto do adapter (`_JS_LISTBOX_ESTADO`), com re-tentativa enquanto a
+    lista carrega; o CBO do executante so' popula depois que o profissional e'
+    selecionado.
 
     A leitura do valor NAO decide mais o resultado. Em 17/09 ela foi promovida a
     veredito e reprovou preenchimento que tinha dado certo: dois jobs seguidos
@@ -617,24 +698,25 @@ async def preencher_cbo(page, indice: int = 0, tentativas: int = 5,
     # depois SEM filtro, aceitando a ocupacao que o portal oferecer.
     termos = [config.CBO_SEARCH, ""]
     for _ in range(max(1, tentativas)):
-        coord = None
+        texto = None
         for termo in termos:
             if not await abrir_dropdown(page, "Código CBO", termo, indice=indice):
-                continue   # label ainda nao renderizou
-            coord = await page.evaluate(_JS_PRIMEIRA_OPCAO)
-            if coord:
+                continue   # label ainda nao renderizou / portal nao respondeu
+            # MESMA leitura que classifica placeholder — o CBO nao tem mais
+            # caminho proprio. Em 29/09 a copia local do criterio clicou no
+            # spinner e gravou 'carregando' no campo obrigatorio.
+            texto = await clicar_primeira_opcao(page)
+            if texto:
                 break
-        if coord:
-            await page.mouse.click(coord["cx"], coord["cy"])
-            await page.wait_for_timeout(800)
-            print(f"[cbo] indice={indice}: {coord.get('texto', '?')!r}", flush=True)
+        if texto:
+            print(f"[cbo] indice={indice}: {texto!r}", flush=True)
             valor = await valor_do_campo(page, "Código CBO", indice)
             if valor == "":
                 # Sinal, nao veredito: pode ser o campo vazio de verdade OU a
                 # geometria tendo achado outro input. O portal decide no Proximo.
-                print(f"[aviso] CBO indice={indice}: clicou em "
-                      f"{coord.get('texto', '?')!r} mas a leitura do campo veio "
-                      f"vazia. Seguindo — quem valida e' o portal.", flush=True)
+                print(f"[aviso] CBO indice={indice}: clicou em {texto!r} mas a "
+                      f"leitura do campo veio vazia. Seguindo — quem valida e' "
+                      f"o portal.", flush=True)
             return True
         # Backoff: a lista do CBO so' popula depois que o profissional carrega, e
         # o portal varia muito nesse tempo. Espera fixa de 700ms x3 (a versao

@@ -293,6 +293,38 @@ async def _buscar_e_selecionar_paciente(page, cpf: str):
 
 
 # ── Campos fixos da pagina 1 ─────────────────────────────────────────────────
+# Campo do formulario que nao ficou preenchido -> falha TIPADA.
+#
+# Ate' 29/09 todos estes casos viravam SubmitAbortado -> ESTADO_INESPERADO ->
+# agente de fallback. O agente nao retoma do ponto de falha: abre browser novo,
+# re-loga e refaz o formulario do zero, entao para um dropdown que nao respondeu
+# ele so' repete a mesma corrida — medido em 24h: 25 fallbacks, 192 passos,
+# US$ 0,96, nenhum job recuperado.
+#
+# Nada foi enviado ao portal em nenhum destes casos (todos ocorrem antes do
+# 'Próximo'), entao e' seguro reenfileirar — que e' o contrato de
+# CAMPO_NAO_PREENCHIDO, ja' fora de MOTIVOS_AGENTE.
+#
+# A excecao e' OPCAO_AUSENTE: o portal respondeu e simplesmente nao tem aquele
+# valor. Repetir nao resolve; e' decisao humana (cadastro do profissional,
+# valor de configuracao errado, convenio que nao oferece).
+_MOTIVOS_CAMPO_HUMANO = {_ui.MotivoCampo.OPCAO_AUSENTE}
+
+
+def _falha_de_campo(page, label: str, r) -> FalhaDeterministica:
+    humano = r.motivo in _MOTIVOS_CAMPO_HUMANO
+    return FalhaDeterministica(
+        motivo=(MotivoFalha.PROCEDIMENTO_INDISPONIVEL if humano
+                else MotivoFalha.CAMPO_NAO_PREENCHIDO),
+        etapa="submit_sassepe",
+        detalhe=(f"Campo '{label}' nao preenchido [{r.motivo.value}]: "
+                 f"{r.detalhe}."
+                 + ("" if humano else
+                    " Nada foi enviado ao portal — seguro reenfileirar.")),
+        url=page.url,
+    )
+
+
 async def _preencher_cabecalho(page, medico: str, crm_job: str | None = None):
     """Checkbox + solicitante (variavel) + CBO + executante (fixo) + CBO +
     regime/especialidade/carater/tipo (fixos). Cada passo e' hard stop (I1):
@@ -346,12 +378,11 @@ async def _preencher_cabecalho(page, medico: str, crm_job: str | None = None):
 
     # Profissional EXECUTANTE (fixo: Pedro Andrade 21798). O alvo e' o 6o item
     # da busca por codigo — so' aparece depois do lazy-load (ver expandir_listbox).
-    ok, porque = await _ui.preencher_dropdown_detalhado(
+    r = await _ui.preencher_dropdown_detalhado(
         page, "Profissional executante",
         config.PROF_EXECUTANTE_NUM, config.PROF_EXECUTANTE_NOME)
-    if not ok:
-        raise SubmitAbortado(
-            f"Profissional executante fixo nao localizado — {porque}.")
+    if not r:
+        raise _falha_de_campo(page, "Profissional executante", r)
     await page.wait_for_timeout(500)
 
     if not await _ui.preencher_cbo(page, indice=1):  # CBO da secao EXECUTANTE
@@ -372,9 +403,9 @@ async def _preencher_cabecalho(page, medico: str, crm_job: str | None = None):
         ("Tipo de Atendimento", config.TIPO_ATEND_BUSCA, config.TIPO_ATEND_OPCAO),
     ]
     for label, busca, opcao in fixos:
-        ok, porque = await _ui.preencher_dropdown_detalhado(page, label, busca, opcao)
-        if not ok:
-            raise SubmitAbortado(f"Campo fixo nao preenchido: {label} — {porque}.")
+        r = await _ui.preencher_dropdown_detalhado(page, label, busca, opcao)
+        if not r:
+            raise _falha_de_campo(page, label, r)
         await page.wait_for_timeout(300)
 
 

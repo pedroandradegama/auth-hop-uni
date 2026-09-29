@@ -175,9 +175,10 @@ class TestRelatoDoPortal:
 
     @pytest.mark.asyncio
     async def test_nenhum_devolve_o_relato_por_termo(self, monkeypatch):
-        async def _abrir(page, label, termo, indice=0): return True
+        async def _abrir(page, label, termo, indice=0):
+            return _ui.MotivoCampo.OK
         async def _ler(page): return {"estado": "vazio", "opcoes": []}
-        monkeypatch.setattr(_ui, "abrir_dropdown", _abrir)
+        monkeypatch.setattr(_ui, "abrir_dropdown_tipado", _abrir)
         monkeypatch.setattr(_ui, "ler_listbox", _ler)
         status, relato = await _ui.selecionar_solicitante(
             None, "37499", "RODRIGO REBELLO FRANCA")
@@ -187,11 +188,12 @@ class TestRelatoDoPortal:
     @pytest.mark.asyncio
     async def test_distingue_portal_vazio_de_recusa_nossa(self, monkeypatch):
         """Portal ofereceu nomes e NÓS é que não casamos — diagnóstico oposto."""
-        async def _abrir(page, label, termo, indice=0): return True
+        async def _abrir(page, label, termo, indice=0):
+            return _ui.MotivoCampo.OK
         async def _ler(page):
             return {"estado": "ok", "opcoes": ["1111 - OUTRA PESSOA",
                                                "2222 - MAIS ALGUEM"]}
-        monkeypatch.setattr(_ui, "abrir_dropdown", _abrir)
+        monkeypatch.setattr(_ui, "abrir_dropdown_tipado", _abrir)
         monkeypatch.setattr(_ui, "ler_listbox", _ler)
         status, relato = await _ui.selecionar_solicitante(
             None, "37499", "RODRIGO REBELLO FRANCA")
@@ -265,10 +267,10 @@ class TestListaVelhaNaoContaComoResposta:
     def test_abrir_dropdown_reprova_o_termo_sem_resposta(self):
         """Ler o listbox depois disso devolveria conteúdo que não corresponde ao
         que foi pedido — e quem lê não tem como saber."""
-        src = inspect.getsource(_ui.abrir_dropdown)
+        src = inspect.getsource(_ui.abrir_dropdown_tipado)
         assert "antes = await _assinatura_listbox(page)" in src
         assert "assinatura_anterior=antes" in src
-        assert "return False" in src
+        assert "MotivoCampo.SEM_RESPOSTA" in src
 
 
 class TestLazyLoadEsperado:
@@ -377,81 +379,241 @@ class TestRelatoDosCamposFixos:
 
     @pytest.mark.asyncio
     async def test_diz_quando_o_portal_nao_respondeu_ao_termo(self, monkeypatch):
-        async def _abrir(page, label, termo, indice=0): return False
-        monkeypatch.setattr(_ui, "abrir_dropdown", _abrir)
-        ok, porque = await _ui.preencher_dropdown_detalhado(
+        async def _abrir(page, label, termo, indice=0):
+            return _ui.MotivoCampo.SEM_RESPOSTA
+        monkeypatch.setattr(_ui, "abrir_dropdown_tipado", _abrir)
+        r = await _ui.preencher_dropdown_detalhado(
             None, "Regime de Atendimento", "ambulatorial", "01 - Ambulatorial")
-        assert ok is False
-        assert "nao respondeu" in porque and "ambulatorial" in porque
+        assert not r
+        assert r.motivo is _ui.MotivoCampo.SEM_RESPOSTA
+        assert "nao respondeu" in r.detalhe and "ambulatorial" in r.detalhe
 
     @pytest.mark.asyncio
     async def test_diz_o_que_o_portal_ofereceu_quando_o_alvo_falta(self, monkeypatch):
-        async def _abrir(page, label, termo, indice=0): return True
+        async def _abrir(page, label, termo, indice=0):
+            return _ui.MotivoCampo.OK
         async def _ler(page): return {"estado": "ok", "opcoes": ["02 - Hospitalar"]}
         async def _expandir(page, **kw): return ["02 - Hospitalar"]
-        monkeypatch.setattr(_ui, "abrir_dropdown", _abrir)
+        monkeypatch.setattr(_ui, "abrir_dropdown_tipado", _abrir)
         monkeypatch.setattr(_ui, "ler_listbox", _ler)
         monkeypatch.setattr(_ui, "expandir_listbox", _expandir)
-        ok, porque = await _ui.preencher_dropdown_detalhado(
+        r = await _ui.preencher_dropdown_detalhado(
             None, "Regime de Atendimento", "ambulatorial", "01 - Ambulatorial")
-        assert ok is False
-        assert "02 - Hospitalar" in porque
-        assert "01 - Ambulatorial" in porque
+        assert not r
+        assert r.motivo is _ui.MotivoCampo.OPCAO_AUSENTE
+        assert "02 - Hospitalar" in r.detalhe
+        assert "01 - Ambulatorial" in r.detalhe
+        assert r.opcoes == ("02 - Hospitalar",)
 
     @pytest.mark.asyncio
     async def test_distingue_alvo_presente_mas_clique_falho(self, monkeypatch):
-        async def _abrir(page, label, termo, indice=0): return True
+        async def _abrir(page, label, termo, indice=0):
+            return _ui.MotivoCampo.OK
         async def _ler(page): return {"estado": "ok", "opcoes": ["01 - Ambulatorial"]}
         async def _clicar(page, opt): return False
-        monkeypatch.setattr(_ui, "abrir_dropdown", _abrir)
+        monkeypatch.setattr(_ui, "abrir_dropdown_tipado", _abrir)
         monkeypatch.setattr(_ui, "ler_listbox", _ler)
         monkeypatch.setattr(_ui, "clicar_opcao_listbox", _clicar)
-        ok, porque = await _ui.preencher_dropdown_detalhado(
+        r = await _ui.preencher_dropdown_detalhado(
             None, "Regime de Atendimento", "ambulatorial", "01 - Ambulatorial")
-        assert ok is False
-        assert "clique" in porque
+        assert not r
+        assert r.motivo is _ui.MotivoCampo.CLIQUE_SEM_EFEITO
+        assert "clique" in r.detalhe
 
     @pytest.mark.asyncio
     async def test_caminho_feliz_nao_tem_porque(self, monkeypatch):
-        async def _abrir(page, label, termo, indice=0): return True
+        async def _abrir(page, label, termo, indice=0):
+            return _ui.MotivoCampo.OK
         async def _ler(page): return {"estado": "ok", "opcoes": ["01 - Ambulatorial"]}
         async def _clicar(page, opt): return True
-        monkeypatch.setattr(_ui, "abrir_dropdown", _abrir)
+        monkeypatch.setattr(_ui, "abrir_dropdown_tipado", _abrir)
         monkeypatch.setattr(_ui, "ler_listbox", _ler)
         monkeypatch.setattr(_ui, "clicar_opcao_listbox", _clicar)
-        ok, porque = await _ui.preencher_dropdown_detalhado(
+        r = await _ui.preencher_dropdown_detalhado(
             None, "Regime de Atendimento", "ambulatorial", "01 - Ambulatorial")
-        assert ok is True and porque == ""
+        assert r.ok and r.detalhe == ""
 
-    def test_a_falha_de_campo_fixo_carrega_o_motivo(self):
+    def test_a_falha_de_campo_fixo_e_tipada(self):
         submit = importlib.import_module("adapters.sassepe.submit")
         corpo = inspect.getsource(submit._preencher_cabecalho)
-        assert 'f"Campo fixo nao preenchido: {label} — {porque}."' in corpo
-        assert "Profissional executante fixo nao localizado — {porque}" in corpo
+        assert "_falha_de_campo(page, label, r)" in corpo
+        assert '_falha_de_campo(page, "Profissional executante", r)' in corpo
 
 
-class TestCboNaoClicaNoSpinner:
-    """29/set: `[cbo] indice=1: 'carregando'` em três ciclos.
+class TestFonteUnicaDeOpcaoReal:
+    """29/set: `[cbo] indice=1: 'carregando'` em três ciclos — o robô clicou no
+    spinner e gravou lixo no campo obrigatório.
 
-    `_JS_PRIMEIRA_OPCAO`, que o CBO usa, descartava só o "Nenhum resultado" —
-    então o clique caía no spinner e a ocupação do profissional ficava com lixo
-    no lugar do código. Mesmo defeito de `c7e98f6`, num caminho de código que
-    aquele commit não tocou: o CBO não passa por `_JS_LISTBOX_ESTADO`.
+    A causa não foi o filtro estar errado; foi existirem TRÊS cópias do critério
+    "o que é opção real" (`_JS_LISTBOX_ESTADO`, `_JS_PRIMEIRA_OPCAO` e o JS
+    embutido em `clicar_opcao_listbox`), e as correções de 25 e 28/09 terem
+    tocado só uma delas. Agora há um fragmento só; quem precisa de coordenada
+    usa o índice que essa leitura já classificou.
     """
 
-    def test_descarta_os_dois_placeholders(self):
-        js = _ui._JS_PRIMEIRA_OPCAO.lower()
-        assert "nenhum resultado" in js
-        assert "carregando" in js
+    def test_nao_existe_mais_copia_do_criterio(self):
+        assert not hasattr(_ui, "_JS_PRIMEIRA_OPCAO")
 
-    def test_usa_os_mesmos_criterios_do_estado(self):
-        """Dois filtros divergentes foi a origem da regressão de 25/09."""
+    def test_o_js_de_coordenada_nao_tem_filtro(self):
+        """Se voltar a ter, volta a poder divergir."""
+        js = _ui._JS_COORD_POR_INDICE.lower()
         for termo in ("nenhum resultado", "carregando", "loading", "buscando"):
-            assert termo in _ui._JS_LISTBOX_ESTADO.lower()
-            assert termo in _ui._JS_PRIMEIRA_OPCAO.lower()
+            assert termo not in js
 
-    def test_pula_o_placeholder_em_vez_de_parar_nele(self):
-        """O antigo olhava só `children[0]`: placeholder na primeira posição
-        devolvia null e a opção real logo abaixo era perdida."""
-        assert "children[0]" not in _ui._JS_PRIMEIRA_OPCAO
-        assert "for (const el of els)" in _ui._JS_PRIMEIRA_OPCAO
+    def test_clicar_opcao_nao_tem_query_proprio(self):
+        src = inspect.getsource(_ui.clicar_opcao_listbox)
+        assert "querySelectorAll" not in src
+        assert "ler_listbox(page)" in src
+
+    @pytest.mark.asyncio
+    async def test_clica_a_opcao_real_e_nao_o_placeholder(self):
+        """Portal com o spinner em children[0] e a opção real em children[1].
+        `_JS_PRIMEIRA_OPCAO` olhava children[0], devolvia o spinner, e o valor
+        do campo virava 'carregando'."""
+        clicados = []
+
+        class _Page:
+            class _Mouse:
+                async def click(self, x, y): clicados.append((x, y))
+            def __init__(self): self.mouse = self._Mouse()
+            async def evaluate(self, js, *a):
+                if "viuCarregando" in js:
+                    return {"estado": "ok", "opcoes": ["999999 - Nao Informado"],
+                            "indices": [1]}
+                assert a and a[0] == 1, "clicou no indice do placeholder"
+                return {"cx": 7, "cy": 9, "texto": "999999 - Nao Informado"}
+            async def wait_for_timeout(self, ms): pass
+
+        texto = await _ui.clicar_primeira_opcao(_Page())
+        assert texto == "999999 - Nao Informado"
+        assert clicados == [(7, 9)]
+
+    @pytest.mark.asyncio
+    async def test_listbox_so_com_placeholder_nao_clica_nada(self):
+        class _Page:
+            async def evaluate(self, js, *a):
+                return {"estado": "carregando", "opcoes": [], "indices": []}
+            async def wait_for_timeout(self, ms): pass
+        assert await _ui.clicar_primeira_opcao(_Page()) is None
+
+
+class TestRelatoDosCamposFixos:
+    """29/set, job 18982e35: o relato determinístico dizia apenas "Campo fixo
+    nao preenchido: Regime de Atendimento" — compatível com quatro causas
+    diferentes. `preencher_dropdown_detalhado` passa a dizer qual delas.
+
+    O caso do solicitante consumiu três commits antes de alguém registrar a
+    resposta do portal; os campos fixos não tinham registro nenhum.
+    """
+
+    @pytest.mark.asyncio
+    async def test_diz_quando_o_portal_nao_respondeu_ao_termo(self, monkeypatch):
+        async def _abrir(page, label, termo, indice=0):
+            return _ui.MotivoCampo.SEM_RESPOSTA
+        monkeypatch.setattr(_ui, "abrir_dropdown_tipado", _abrir)
+        r = await _ui.preencher_dropdown_detalhado(
+            None, "Regime de Atendimento", "ambulatorial", "01 - Ambulatorial")
+        assert not r
+        assert r.motivo is _ui.MotivoCampo.SEM_RESPOSTA
+        assert "nao respondeu" in r.detalhe and "ambulatorial" in r.detalhe
+
+    @pytest.mark.asyncio
+    async def test_diz_o_que_o_portal_ofereceu_quando_o_alvo_falta(self, monkeypatch):
+        async def _abrir(page, label, termo, indice=0):
+            return _ui.MotivoCampo.OK
+        async def _ler(page): return {"estado": "ok", "opcoes": ["02 - Hospitalar"]}
+        async def _expandir(page, **kw): return ["02 - Hospitalar"]
+        monkeypatch.setattr(_ui, "abrir_dropdown_tipado", _abrir)
+        monkeypatch.setattr(_ui, "ler_listbox", _ler)
+        monkeypatch.setattr(_ui, "expandir_listbox", _expandir)
+        r = await _ui.preencher_dropdown_detalhado(
+            None, "Regime de Atendimento", "ambulatorial", "01 - Ambulatorial")
+        assert not r
+        assert r.motivo is _ui.MotivoCampo.OPCAO_AUSENTE
+        assert "02 - Hospitalar" in r.detalhe
+        assert "01 - Ambulatorial" in r.detalhe
+        assert r.opcoes == ("02 - Hospitalar",)
+
+    @pytest.mark.asyncio
+    async def test_distingue_alvo_presente_mas_clique_falho(self, monkeypatch):
+        async def _abrir(page, label, termo, indice=0):
+            return _ui.MotivoCampo.OK
+        async def _ler(page): return {"estado": "ok", "opcoes": ["01 - Ambulatorial"]}
+        async def _clicar(page, opt): return False
+        monkeypatch.setattr(_ui, "abrir_dropdown_tipado", _abrir)
+        monkeypatch.setattr(_ui, "ler_listbox", _ler)
+        monkeypatch.setattr(_ui, "clicar_opcao_listbox", _clicar)
+        r = await _ui.preencher_dropdown_detalhado(
+            None, "Regime de Atendimento", "ambulatorial", "01 - Ambulatorial")
+        assert not r
+        assert r.motivo is _ui.MotivoCampo.CLIQUE_SEM_EFEITO
+        assert "clique" in r.detalhe
+
+    @pytest.mark.asyncio
+    async def test_caminho_feliz_nao_tem_porque(self, monkeypatch):
+        async def _abrir(page, label, termo, indice=0):
+            return _ui.MotivoCampo.OK
+        async def _ler(page): return {"estado": "ok", "opcoes": ["01 - Ambulatorial"]}
+        async def _clicar(page, opt): return True
+        monkeypatch.setattr(_ui, "abrir_dropdown_tipado", _abrir)
+        monkeypatch.setattr(_ui, "ler_listbox", _ler)
+        monkeypatch.setattr(_ui, "clicar_opcao_listbox", _clicar)
+        r = await _ui.preencher_dropdown_detalhado(
+            None, "Regime de Atendimento", "ambulatorial", "01 - Ambulatorial")
+        assert r.ok and r.detalhe == ""
+
+    def test_a_falha_de_campo_fixo_e_tipada(self):
+        submit = importlib.import_module("adapters.sassepe.submit")
+        corpo = inspect.getsource(submit._preencher_cabecalho)
+        assert "_falha_de_campo(page, label, r)" in corpo
+        assert '_falha_de_campo(page, "Profissional executante", r)' in corpo
+
+
+
+
+class TestCampoNaoVaiMaisParaOAgente:
+    """Codex, 29/set: "esses casos convergem para SubmitAbortado e depois para
+    ESTADO_INESPERADO, o que aciona o agente indevidamente".
+
+    O agente não retoma do ponto de falha — abre browser novo, re-loga e refaz o
+    formulário do zero. Para um dropdown que não respondeu, ele só repete a mesma
+    corrida. Custo medido em 24h: 25 fallbacks, 192 passos, US$ 0,96, nenhum job
+    recuperado.
+    """
+
+    def _falha(self, motivo):
+        submit = importlib.import_module("adapters.sassepe.submit")
+
+        class _Page:
+            url = "https://sassepe.maida.health/solicitacoes/sp-sadt"
+        r = _ui.ResultadoCampo(motivo, "detalhe qualquer")
+        return submit._falha_de_campo(_Page(), "Regime de Atendimento", r)
+
+    def test_transitorio_nao_aciona_o_agente_e_pode_reenfileirar(self):
+        from agente import MOTIVOS_AGENTE, MotivoFalha
+        for motivo in (_ui.MotivoCampo.CAMPO_AUSENTE,
+                       _ui.MotivoCampo.SEM_RESPOSTA,
+                       _ui.MotivoCampo.RESPOSTA_INCOERENTE,
+                       _ui.MotivoCampo.CLIQUE_SEM_EFEITO):
+            f = self._falha(motivo)
+            assert f.motivo is MotivoFalha.CAMPO_NAO_PREENCHIDO
+            assert f.motivo not in MOTIVOS_AGENTE
+            assert "seguro reenfileirar" in f.detalhe
+
+    def test_opcao_ausente_e_decisao_humana(self):
+        """O portal respondeu e não tem aquele valor. Repetir não resolve."""
+        from agente import MOTIVOS_AGENTE, MOTIVOS_REQUER_HUMANO, MotivoFalha
+        f = self._falha(_ui.MotivoCampo.OPCAO_AUSENTE)
+        assert f.motivo is MotivoFalha.PROCEDIMENTO_INDISPONIVEL
+        assert f.motivo not in MOTIVOS_AGENTE
+        assert f.motivo in MOTIVOS_REQUER_HUMANO
+        assert "seguro reenfileirar" not in f.detalhe
+
+    def test_o_motivo_tipado_aparece_na_mensagem_do_operador(self):
+        f = self._falha(_ui.MotivoCampo.RESPOSTA_INCOERENTE)
+        assert "[resposta_incoerente]" in f.detalhe
+        assert "Regime de Atendimento" in f.detalhe
+
+    def test_a_url_viva_acompanha(self):
+        f = self._falha(_ui.MotivoCampo.SEM_RESPOSTA)
+        assert f.url.endswith("/solicitacoes/sp-sadt")
