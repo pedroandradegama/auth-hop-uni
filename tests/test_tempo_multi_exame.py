@@ -31,7 +31,13 @@ class TestEsperaPorEvento:
         """Poll não pode piorar o pior caso — só sair mais cedo."""
         src = inspect.getsource(_ui.abrir_dropdown)
         assert "_esperar_listbox(page, 2000" in src   # era wait fixo de 2000
-        assert "_esperar_listbox(page, 800)" in src    # era wait fixo de 800
+
+    def test_o_wait_pos_wheel_virou_espera_pelo_lazy_load(self):
+        """O `wait_for_timeout(800)` original dava tempo do lote seguinte
+        chegar; o poll que o substituiu retornava na hora (já havia opções na
+        tela) e a lista travava nos 5 primeiros — 29/09, executante fixo."""
+        src = inspect.getsource(_ui.abrir_dropdown)
+        assert "expandir_listbox(page, max_ciclos=1, timeout_ms=800)" in src
 
     @pytest.mark.asyncio
     async def test_sai_assim_que_o_listbox_responde(self):

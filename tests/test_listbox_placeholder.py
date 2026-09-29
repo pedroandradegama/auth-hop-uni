@@ -269,3 +269,98 @@ class TestListaVelhaNaoContaComoResposta:
         assert "antes = await _assinatura_listbox(page)" in src
         assert "assinatura_anterior=antes" in src
         assert "return False" in src
+
+
+class TestLazyLoadEsperado:
+    """29/set: a falha migrou para o executante fixo ('21798 - PEDRO ANDRADE').
+
+    O listbox entrega ~5 itens e só carrega o resto sob WheelEvent no próprio
+    elemento. O piloto manual já documentava que, buscando '21798', o alvo é o
+    6º item. Antes de `eda1623` a espera pós-wheel era `wait_for_timeout(800)`,
+    que dava tempo do lote seguinte chegar; o poll que a substituiu retornava na
+    hora (já havia opções) e a lista travava nos 5 primeiros.
+    """
+
+    class _PageLazy:
+        """Cada WheelEvent acrescenta um lote de 5."""
+
+        def __init__(self, total=12):
+            self.total = total
+            self.carregados = 5
+            self.wheels = 0
+
+        async def evaluate(self, js, *a):
+            if "WheelEvent" in js:
+                self.wheels += 1
+                self.carregados = min(self.total, self.carregados + 5)
+                return None
+            return {"estado": "ok",
+                    "opcoes": [f"21798 - MEDICO {i}" for i in range(self.carregados)]}
+
+        async def wait_for_timeout(self, ms):
+            pass
+
+    @pytest.mark.asyncio
+    async def test_expande_ate_a_lista_parar_de_crescer(self):
+        page = self._PageLazy(total=12)
+        opcoes = await _ui.expandir_listbox(page, max_ciclos=6, passo_ms=50,
+                                            timeout_ms=200)
+        assert len(opcoes) == 12
+
+    @pytest.mark.asyncio
+    async def test_para_de_rodar_quando_a_lista_esta_completa(self):
+        """Lista que já veio inteira não paga ciclos extras."""
+        page = self._PageLazy(total=5)
+        await _ui.expandir_listbox(page, max_ciclos=6, passo_ms=50, timeout_ms=200)
+        assert page.wheels == 1
+
+    @pytest.mark.asyncio
+    async def test_respeita_o_teto_de_ciclos(self):
+        page = self._PageLazy(total=10**6)
+        await _ui.expandir_listbox(page, max_ciclos=3, passo_ms=50, timeout_ms=200)
+        assert page.wheels == 3
+
+    def test_preencher_dropdown_expande_quando_o_alvo_nao_esta_na_lista(self):
+        src = inspect.getsource(_ui.preencher_dropdown)
+        assert "_opcao_presente" in src
+        assert "expandir_listbox" in src
+
+    def test_opcao_presente_usa_o_mesmo_criterio_do_clique(self):
+        opcoes = ["21798 - PEDRO ANDRADE GAMA DE OLIVEIRA", "21798 - OUTRO"]
+        assert _ui._opcao_presente(opcoes, "21798 - PEDRO ANDRADE GAMA DE OLIVEIRA")
+        assert _ui._opcao_presente(opcoes, "PEDRO ANDRADE")
+        assert not _ui._opcao_presente(opcoes, "MARIA")
+
+
+class TestCoerenciaComOTermo:
+    """29/set, job 0d4466b9: buscas por '42085', 'ALICE LECA VITAL DO CARMO' e
+    'ALICE LECA' devolveram as MESMAS cinco linhas (RUBEM, RICARDO, ELAINE,
+    DIEGO, DANIEL) — lista filtrada por CRM entregue como resposta a uma busca
+    por nome. "A lista mudou" não pega isso quando a assinatura anterior não
+    pôde ser lida (listbox fechado no instante da leitura)."""
+
+    CRM = ["42085 - RUBEM PINA DOMINGUES", "42085 - RICARDO PEDRO LOTTI"]
+
+    def test_lista_de_crm_nao_responde_busca_por_nome(self):
+        assert not _ui.opcoes_coerentes(self.CRM, "ALICE LECA VITAL DO CARMO")
+
+    def test_lista_de_crm_responde_busca_por_crm(self):
+        assert _ui.opcoes_coerentes(self.CRM, "42085")
+
+    def test_acento_nao_derruba_a_coerencia(self):
+        assert _ui.opcoes_coerentes(["37499 - RODRIGO REBELLO FRANÇA"],
+                                    "RODRIGO REBELLO FRANCA")
+
+    @pytest.mark.asyncio
+    async def test_poll_nao_aceita_lista_incompativel_com_o_termo(self):
+        class _Page:
+            def __init__(self): self.polls = 0
+            async def evaluate(self, js, *a):
+                self.polls += 1
+                return {"estado": "ok",
+                        "opcoes": TestCoerenciaComOTermo.CRM}
+            async def wait_for_timeout(self, ms): pass
+        page = _Page()
+        assert await _ui._esperar_listbox(page, 900, passo_ms=150,
+                                          teto_carregando_ms=900,
+                                          termo="ALICE LECA") is False

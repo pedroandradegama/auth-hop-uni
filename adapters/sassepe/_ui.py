@@ -180,6 +180,27 @@ async def opcoes_do_listbox(page) -> list:
     return (await ler_listbox(page)).get("opcoes") or []
 
 
+def opcoes_coerentes(opcoes: list, termo: str) -> bool:
+    """As opcoes correspondem AO TERMO digitado?
+
+    Criterio mais forte que "a lista mudou": o portal filtra pelo que esta'
+    visivel na opcao — busca por CRM devolve linhas prefixadas por aquele CRM,
+    busca por nome devolve linhas que contem o nome. Se nenhuma opcao contem o
+    primeiro token do termo, o que esta' na tela ainda e' resposta de outra
+    consulta.
+
+    Caso real (29/09, job 0d4466b9): buscas por '42085', 'ALICE LECA VITAL DO
+    CARMO' e 'ALICE LECA' devolveram as MESMAS cinco linhas (RUBEM, RICARDO,
+    ELAINE, DIEGO, DANIEL) — uma lista filtrada por CRM sendo entregue como se
+    fosse resposta a uma busca por nome. O criterio "mudou desde antes de
+    digitar" nao pega isso quando a assinatura anterior nao pode ser lida.
+    """
+    alvo = _norm(termo).split()
+    if not alvo:
+        return True
+    return any(alvo[0] in _norm(o) for o in opcoes)
+
+
 async def _assinatura_listbox(page) -> str | None:
     """Impressao digital do conteudo atual do listbox (None se fechado)."""
     leitura = await ler_listbox(page)
@@ -190,7 +211,8 @@ async def _assinatura_listbox(page) -> str | None:
 
 async def _esperar_listbox(page, timeout_ms: int, passo_ms: int = 150,
                            teto_carregando_ms: int = 12000,
-                           assinatura_anterior: str | None = None) -> bool:
+                           assinatura_anterior: str | None = None,
+                           termo: str | None = None) -> bool:
     """Poll ate' o listbox trazer OPCAO REAL. Tres estados, tres politicas.
 
     - 'ok'          -> sai na hora (e' daqui que vem o ganho de tempo de 25/09).
@@ -227,10 +249,14 @@ async def _esperar_listbox(page, timeout_ms: int, passo_ms: int = 150,
         leitura = await ler_listbox(page)
         estado = leitura.get("estado")
         if estado == "ok":
-            atual = "|".join(leitura.get("opcoes") or [])
-            if assinatura_anterior is None or atual != assinatura_anterior:
+            opcoes = leitura.get("opcoes") or []
+            atual = "|".join(opcoes)
+            mudou = assinatura_anterior is None or atual != assinatura_anterior
+            cabe = termo is None or opcoes_coerentes(opcoes, termo)
+            if mudou and cabe:
                 return True
-            # Mesma lista de antes de digitar: o filtro ainda nao chegou.
+            # Lista igual a de antes, ou incompativel com o termo: o filtro
+            # ainda nao chegou. Tratar como 'carregando' e continuar esperando.
             estado = "carregando"
         if estado == "carregando":
             vazio_seguido = 0
@@ -278,11 +304,48 @@ async def abrir_dropdown(page, label_text: str, search_term: str,
         # deixaria o texto anterior no campo e o filtro valendo.
         await page.keyboard.press("Delete")
         antes = None            # aqui a lista sem filtro E' a resposta esperada
-    if not await _esperar_listbox(page, 2000, assinatura_anterior=antes):
+    if not await _esperar_listbox(page, 2000, assinatura_anterior=antes,
+                                  termo=search_term or None):
         return False
-    await page.evaluate(_JS_WHEEL_LISTBOX)  # REQUERIDO p/ lazy-load
-    await _esperar_listbox(page, 800)
+    # Um ciclo de lazy-load no caminho comum: mesmo teto do wait fixo de
+    # 800ms que existia antes do poll. Quem precisa de mais (alvo fora dos
+    # primeiros lotes) expande de novo, so' nesse caso.
+    await expandir_listbox(page, max_ciclos=1, timeout_ms=800)
     return True
+
+
+async def expandir_listbox(page, max_ciclos: int = 4, passo_ms: int = 150,
+                           timeout_ms: int = 1500) -> list:
+    """Forca o lazy-load ate' a lista parar de crescer. Devolve as opcoes.
+
+    O listbox do portal renderiza ~5 itens e so' carrega o resto quando recebe
+    um WheelEvent NO PROPRIO elemento (scroll por coordenada e scrollTop nao
+    disparam o handler React). Descoberta do piloto manual: buscando o
+    executante fixo '21798', o registro alvo e' o 6o item — invisivel sem isso.
+
+    Antes de `eda1623` a espera pos-wheel era um `wait_for_timeout(800)` fixo,
+    que dava tempo do lote seguinte chegar. O poll que a substituiu retorna na
+    hora, porque ja' existem opcoes na tela: o lazy-load deixou de ser esperado
+    e a lista passou a travar nos 5 primeiros. E' a terceira manifestacao do
+    mesmo commit (as outras: placeholder de vazio e spinner).
+    """
+    opcoes = await opcoes_do_listbox(page)
+    for _ in range(max(1, max_ciclos)):
+        antes = len(opcoes)
+        try:
+            await page.evaluate(_JS_WHEEL_LISTBOX)
+        except Exception:
+            break
+        gasto = 0
+        while gasto < timeout_ms:
+            await page.wait_for_timeout(passo_ms)
+            gasto += passo_ms
+            opcoes = await opcoes_do_listbox(page)
+            if len(opcoes) > antes:
+                break
+        if len(opcoes) <= antes:
+            break            # parou de crescer: lista completa
+    return opcoes
 
 
 async def clicar_opcao_listbox(page, option_text: str) -> bool:
@@ -308,11 +371,19 @@ async def clicar_opcao_listbox(page, option_text: str) -> bool:
     return True
 
 
+def _opcao_presente(opcoes: list, option_text: str) -> bool:
+    """Mesmo criterio de `clicar_opcao_listbox`: exato, com fallback 'contem'."""
+    alvo = (option_text or "").strip()
+    return any(o.strip() == alvo or alvo in o for o in opcoes)
+
+
 async def preencher_dropdown(page, label_text: str, search_term: str,
                              option_text: str) -> bool:
     """abrir_dropdown + clicar_opcao. Retorna True so' se a opcao foi clicada."""
     if not await abrir_dropdown(page, label_text, search_term):
         return False
+    if not _opcao_presente(await opcoes_do_listbox(page), option_text):
+        await expandir_listbox(page, max_ciclos=6)
     return await clicar_opcao_listbox(page, option_text)
 
 
@@ -379,6 +450,14 @@ async def selecionar_solicitante(page, crm: str | None, nome: str):
         candidatos = filtrar_candidatos(opcoes, tokens)
         if not candidatos:
             candidatos = filtrar_candidatos(opcoes, tokens, LIMIAR_FUZZY)
+        if not candidatos and len(opcoes) >= 5:
+            # Lista cheia e nada casou: o alvo pode estar no lote seguinte. O
+            # portal entrega ~5 por vez e so' carrega o resto sob WheelEvent.
+            opcoes = await expandir_listbox(page, max_ciclos=6)
+            print(f"[solicitante] termo={termo!r} apos expandir: "
+                  f"opcoes={len(opcoes)}", flush=True)
+            candidatos = (filtrar_candidatos(opcoes, tokens)
+                          or filtrar_candidatos(opcoes, tokens, LIMIAR_FUZZY))
 
         if len(candidatos) == 1:
             ok = await clicar_opcao_listbox(page, candidatos[0])
