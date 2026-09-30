@@ -617,3 +617,102 @@ class TestCampoNaoVaiMaisParaOAgente:
     def test_a_url_viva_acompanha(self):
         f = self._falha(_ui.MotivoCampo.SEM_RESPOSTA)
         assert f.url.endswith("/solicitacoes/sp-sadt")
+
+
+class TestListaEstaticaNaoPrecisaMudar:
+    """30/set: 'Regime de Atendimento' deu `sem_resposta` em 4 de 4 ciclos.
+
+    Regressão de `a34a30b`, que passou a exigir que a lista MUDASSE depois de
+    digitar. Os quatro campos fixos do formulário são listas estáticas curtas
+    ("01 - Ambulatorial", "02 - Hospitalar", …) que não filtram por digitação:
+    a lista depois é igual à de antes, e a espera nunca terminava. O campo
+    funcionava até 23/09 — jobs chegavam a `pos_cabecalho` com os quatro
+    preenchidos.
+
+    O critério certo é o de `422f323`: se a lista já CONTÉM o que foi pedido,
+    ela responde ao termo. Não precisa mudar.
+    """
+
+    ESTATICA = ["01 - Ambulatorial", "02 - Hospitalar", "03 - Domiciliar"]
+
+    def _page(self, opcoes):
+        class _Page:
+            def __init__(self): self.polls = 0
+            async def evaluate(self, js, *a):
+                self.polls += 1
+                return {"estado": "ok", "opcoes": opcoes,
+                        "indices": list(range(len(opcoes)))}
+            async def wait_for_timeout(self, ms): pass
+        return _Page()
+
+    @pytest.mark.asyncio
+    async def test_lista_inalterada_mas_coerente_e_aceita(self):
+        page = self._page(self.ESTATICA)
+        assert await _ui._esperar_listbox(
+            page, 2000, passo_ms=150,
+            assinatura_anterior="|".join(self.ESTATICA),
+            termo="ambulatorial") is True
+        assert page.polls == 1          # aceita de primeira, não espera o teto
+
+    @pytest.mark.asyncio
+    async def test_lista_velha_incoerente_continua_rejeitada(self):
+        """A proteção de 28/09 não pode ter sido perdida: a busca por '37499'
+        devolvia a cabeça alfabética do cadastro, que não contém '37499'."""
+        cabeca = ["29278 - AABENMA SILVA RIBEIRO", "245471 - AALAN SOUSA GALIAN"]
+        page = self._page(cabeca)
+        assert await _ui._esperar_listbox(
+            page, 900, passo_ms=150, teto_carregando_ms=900,
+            assinatura_anterior="|".join(cabeca), termo="37499") is False
+
+    @pytest.mark.asyncio
+    async def test_sem_termo_o_criterio_continua_sendo_a_mudanca(self):
+        """Filtro limpo não tem o que conferir; o único sinal é mudar."""
+        page = self._page(self.ESTATICA)
+        assert await _ui._esperar_listbox(
+            page, 900, passo_ms=150, teto_carregando_ms=900,
+            assinatura_anterior="|".join(self.ESTATICA), termo=None) is False
+
+
+class TestCorridaEntreClassificarEClicar:
+    """30/set: `[cbo] indice=0: 'carregando'` num ciclo em que a leitura tinha
+    classificado uma opção real.
+
+    Entre `ler_listbox` e a medição da coordenada o listbox re-renderiza, e o
+    índice passa a apontar para outro elemento — inclusive um placeholder.
+    """
+
+    @pytest.mark.asyncio
+    async def test_nao_clica_se_o_indice_mudou_de_conteudo(self):
+        clicados = []
+
+        class _Page:
+            class _Mouse:
+                async def click(self, x, y): clicados.append((x, y))
+            def __init__(self): self.mouse = self._Mouse()
+            async def evaluate(self, js, *a):
+                if "viuCarregando" in js:
+                    return {"estado": "ok", "opcoes": ["999999 - Nao Informado"],
+                            "indices": [1]}
+                return {"cx": 3, "cy": 4, "texto": "carregando"}   # re-renderizou
+            async def wait_for_timeout(self, ms): pass
+
+        assert await _ui.clicar_primeira_opcao(_Page()) is None
+        assert clicados == []
+
+    @pytest.mark.asyncio
+    async def test_clica_quando_o_conteudo_confere(self):
+        clicados = []
+
+        class _Page:
+            class _Mouse:
+                async def click(self, x, y): clicados.append((x, y))
+            def __init__(self): self.mouse = self._Mouse()
+            async def evaluate(self, js, *a):
+                if "viuCarregando" in js:
+                    return {"estado": "ok", "opcoes": ["999999 - Nao Informado"],
+                            "indices": [1]}
+                return {"cx": 3, "cy": 4, "texto": "999999 - Nao Informado"}
+            async def wait_for_timeout(self, ms): pass
+
+        assert await _ui.clicar_primeira_opcao(_Page()) == "999999 - Nao Informado"
+        assert clicados == [(3, 4)]

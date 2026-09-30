@@ -311,14 +311,30 @@ async def _esperar_listbox(page, timeout_ms: int, passo_ms: int = 150,
         estado = leitura.get("estado")
         if estado == "ok":
             opcoes = leitura.get("opcoes") or []
-            atual = "|".join(opcoes)
-            mudou = assinatura_anterior is None or atual != assinatura_anterior
-            cabe = termo is None or opcoes_coerentes(opcoes, termo)
-            if mudou and cabe:
+            if termo:
+                # COERENCIA BASTA. Se a lista ja' contem o que foi pedido, ela
+                # responde ao termo — exigir que ela MUDE quebra os dropdowns
+                # que nao filtram por digitacao.
+                #
+                # Regressao de a34a30b, vista em 30/09: 'Regime de Atendimento'
+                # deu `sem_resposta` em 4 de 4 ciclos. E' uma lista estatica
+                # curta ("01 - Ambulatorial", "02 - Hospitalar", ...) que nao
+                # filtra; digitar nao muda nada, entao a espera nunca terminava.
+                # O campo funcionava ate' 23/09, antes de eu exigir a mudanca.
+                #
+                # A protecao contra lista velha continua: em 28/09 a busca por
+                # '37499' devolvia a cabeca alfabetica do cadastro, que NAO
+                # contem '37499' — incoerente, rejeitada.
+                aceita = opcoes_coerentes(opcoes, termo)
+            else:
+                # Sem termo (filtro limpo) nao ha' o que conferir; o unico sinal
+                # de que o portal reagiu e' o conteudo ter mudado.
+                atual = "|".join(opcoes)
+                aceita = (assinatura_anterior is None
+                          or atual != assinatura_anterior)
+            if aceita:
                 return True
-            # Lista igual a de antes, ou incompativel com o termo: o filtro
-            # ainda nao chegou. Tratar como 'carregando' e continuar esperando.
-            estado = "carregando"
+            estado = "carregando"   # ainda nao e' resposta: continua esperando
         if estado == "carregando":
             vazio_seguido = 0
             # Spinner na tela renova a paciencia (nunca alem do teto absoluto):
@@ -378,8 +394,14 @@ async def abrir_dropdown_tipado(page, label_text: str, search_term: str,
         # A lista pode ter ficado parada (portal mudo) ou ter vindo com conteudo
         # que nao corresponde ao termo. A leitura final diz qual dos dois.
         leitura = await ler_listbox(page)
-        if (leitura.get("estado") == "ok" and search_term
-                and not opcoes_coerentes(leitura.get("opcoes") or [], search_term)):
+        estado = leitura.get("estado")
+        opcoes = leitura.get("opcoes") or []
+        # Sem isto, "sem_resposta" cobre tanto "o dropdown nem abriu" quanto
+        # "abriu e trouxe outra coisa" — foi preciso um ciclo inteiro so' para
+        # distinguir os dois no caso do Regime de Atendimento (30/09).
+        print(f"[campo] {label_text!r} termo={search_term!r} sem resposta: "
+              f"estado={estado!r} opcoes={len(opcoes)}: {opcoes[:6]}", flush=True)
+        if estado == "ok" and search_term and not opcoes_coerentes(opcoes, search_term):
             return MotivoCampo.RESPOSTA_INCOERENTE
         return MotivoCampo.SEM_RESPOSTA
     # Um ciclo de lazy-load no caminho comum: mesmo teto do wait fixo de
@@ -423,14 +445,28 @@ async def expandir_listbox(page, max_ciclos: int = 4, passo_ms: int = 150,
     return opcoes
 
 
-async def _clicar_indice(page, indice: int, espera_ms: int = 800) -> str | None:
-    """Clica o elemento de `indice` do listbox. Devolve o texto clicado."""
+async def _clicar_indice(page, indice: int, esperado: str | None = None,
+                        espera_ms: int = 800) -> str | None:
+    """Clica o elemento de `indice` do listbox. Devolve o texto clicado.
+
+    `esperado` e' o texto que a classificacao viu naquele indice. Entre
+    `ler_listbox` e a medicao da coordenada o listbox pode re-renderizar, e o
+    indice passa a apontar para outro elemento — inclusive um placeholder.
+    Visto em 30/09: `[cbo] indice=0: 'carregando'` num ciclo em que a leitura
+    tinha classificado uma opcao real. Conferir o texto antes de clicar custa
+    nada e fecha a corrida.
+    """
     coord = await page.evaluate(_JS_COORD_POR_INDICE, indice)
     if not coord:
         return None
+    texto = (coord.get("texto") or "").strip()
+    if esperado is not None and texto != esperado.strip():
+        print(f"[listbox] indice {indice} mudou entre classificar e clicar: "
+              f"esperava {esperado!r}, achei {texto!r}. Nao clicado.", flush=True)
+        return None
     await page.mouse.click(coord["cx"], coord["cy"])
     await page.wait_for_timeout(espera_ms)
-    return coord.get("texto")
+    return texto
 
 
 async def clicar_opcao_listbox(page, option_text: str) -> bool:
@@ -449,7 +485,8 @@ async def clicar_opcao_listbox(page, option_text: str) -> bool:
         escolha = next((i for i, o in enumerate(opcoes) if alvo and alvo in o), None)
     if escolha is None or escolha >= len(indices):
         return False
-    return await _clicar_indice(page, indices[escolha]) is not None
+    return await _clicar_indice(page, indices[escolha],
+                                esperado=opcoes[escolha]) is not None
 
 
 async def clicar_primeira_opcao(page) -> str | None:
@@ -462,9 +499,11 @@ async def clicar_primeira_opcao(page) -> str | None:
     """
     leitura = await ler_listbox(page)
     indices = leitura.get("indices") or []
+    opcoes = leitura.get("opcoes") or []
     if not indices:
         return None
-    return await _clicar_indice(page, indices[0])
+    return await _clicar_indice(page, indices[0],
+                                esperado=opcoes[0] if opcoes else None)
 
 
 def _opcao_presente(opcoes: list, option_text: str) -> bool:

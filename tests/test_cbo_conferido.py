@@ -58,7 +58,9 @@ class _PageFake:
                 return None
             texto = ("225125 - MEDICO RADIOLOGISTA" if self.so_sem_filtro
                      else "999999 - null")
-            return {"cx": 5, "cy": 5, "texto": texto}
+            # MESMO texto que a classificacao devolveu: o clique confere, para
+            # fechar a corrida em que o listbox re-renderiza no meio.
+            return {"cx": 5, "cy": 5, "texto": f"{texto} [{self.filtro}]"}
         if "nenhum resultado" in js.lower() and "listbox" in js.lower():
             self.tentativa += 1
             if self.placeholder or self.tentativa < self.abre:
