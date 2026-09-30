@@ -138,6 +138,37 @@ async def _diag(page, etapa: str) -> str | None:
     return caminho
 
 
+async def _iniciar_trace_falha(page) -> bool:
+    """Liga trace opt-in para um canario; o zip so' e' salvo se o job falhar."""
+    if not config.trace_falhas_habilitado():
+        return False
+    try:
+        await page.context.tracing.start(screenshots=True, snapshots=True,
+                                         sources=False)
+    except Exception as e:
+        print(f"[trace] nao iniciado: {type(e).__name__}: {e}", flush=True)
+        return False
+    print("[trace] habilitado; sera' salvo somente em falha.", flush=True)
+    return True
+
+
+async def _encerrar_trace(page, falhou: bool) -> str | None:
+    """Para o trace. Em sucesso descarta; em falha preserva o zip localmente."""
+    try:
+        if not falhou:
+            await page.context.tracing.stop()
+            return None
+        os.makedirs(config.TRACES_DIR, exist_ok=True)
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        caminho = os.path.join(config.TRACES_DIR, f"falha_{ts}.zip")
+        await page.context.tracing.stop(path=caminho)
+        print(f"[trace] falha salva em {caminho}", flush=True)
+        return caminho
+    except Exception as e:
+        print(f"[trace] nao encerrado: {type(e).__name__}: {e}", flush=True)
+        return None
+
+
 # ── Navegacao ────────────────────────────────────────────────────────────────
 async def _coord_texto_exato(page, texto):
     """Coord do centro do 1o elemento visivel com texto EXATO. None se ausente.
@@ -740,7 +771,10 @@ async def executar(job: dict) -> dict:
 
     try:
         async with sessao.navegador() as page:
+          trace_ativo = await _iniciar_trace_falha(page)
+          falhou = False
           try:
+            try:
               # Fase inicial instrumentada: snapshot+URL a cada passo, e um
               # snapshot no MOMENTO da falha (page ainda viva — o except externo
               # roda com o browser ja' fechado). So' diagnostico; nao muda o fluxo.
@@ -795,8 +829,14 @@ async def executar(job: dict) -> dict:
 
               # Tela de resumo (/confirmar-dados) -> Enviar (irreversivel) + protocolo.
               return await _enviar_solicitacao(page, cpf, evidencias)
-          except SubmitAbortado as e:
-            raise _UrlNaFalha(page.url, tela_da_falha) from e
+            except SubmitAbortado as e:
+              raise _UrlNaFalha(page.url, tela_da_falha) from e
+          except Exception:
+            falhou = True
+            raise
+          finally:
+            if trace_ativo:
+              await _encerrar_trace(page, falhou)
 
     except _UrlNaFalha as e:
         # A URL viva no momento da falha. Sem ela o agente nao sabe ONDE o robo

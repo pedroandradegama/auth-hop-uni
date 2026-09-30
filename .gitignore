@@ -15,5 +15,6 @@ logs/
 .DS_Store
 .DS_Store
 evidencias/
+traces/
 
 outbox/

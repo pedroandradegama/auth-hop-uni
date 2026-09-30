@@ -839,3 +839,81 @@ class TestLazyLoadPrecisaChegarAoFim:
         js = _ui._JS_WHEEL_LISTBOX
         assert "deltaY: 800" in js
         assert "i < 3" in js
+
+
+class TestCoerenciaExigeTodosOsTokens:
+    """30/set. `opcoes_coerentes` conferia só o primeiro token do termo, e a
+    lista da consulta anterior passava quando os dois termos começavam igual:
+
+        termo='ALICE LECA VITAL DO CARMO' estado='ok' opcoes=5:
+          ['91762 - ACSA ALICE MARTINS ARAUJO', '91370 - ADRIANA ALICE A DA
+            SILVA DE FREITAS', ...]
+
+    É o resultado do termo anterior ('ALICE'). Uma resposta de verdade conteria
+    'LECA' também.
+    """
+
+    VELHA = ["91762 - ACSA ALICE MARTINS ARAUJO",
+             "91370 - ADRIANA ALICE A DA SILVA DE FREITAS"]
+
+    def test_lista_do_termo_anterior_nao_passa(self):
+        assert not _ui.opcoes_coerentes(self.VELHA, "ALICE LECA VITAL DO CARMO")
+
+    def test_resposta_de_verdade_passa(self):
+        assert _ui.opcoes_coerentes(
+            ["42085 - ALICE LEÇA VITAL DO CARMO"], "ALICE LECA VITAL DO CARMO")
+
+    def test_termo_de_um_token_continua_valendo(self):
+        assert _ui.opcoes_coerentes(self.VELHA, "ALICE")
+        assert _ui.opcoes_coerentes(["42085 - RUBEM PINA"], "42085")
+
+    def test_sobrenome_extra_no_registro_nao_atrapalha(self):
+        """'NUBIA ROSA LOPES' ⊂ 'NUBIA ROSA LOPES FREIRE' continua casando."""
+        assert _ui.opcoes_coerentes(
+            ["2644 - NUBIA ROSA LOPES FREIRE"], "NUBIA ROSA LOPES")
+
+
+class TestExpandirNaoPodeEncolher:
+    """30/set: `opcoes=5` antes, `apos expandir: opcoes=0` depois. O scroll
+    derrubou a lista. Devolver o vazio faz o adapter concluir "o portal não
+    tem" — o oposto do que ele tinha acabado de mostrar."""
+
+    @pytest.mark.asyncio
+    async def test_devolve_a_maior_lista_ja_vista(self):
+        leituras = iter([
+            {"estado": "ok", "opcoes": ["a1", "a2", "a3"], "indices": [0, 1, 2]},
+            {"estado": "ok", "opcoes": [], "indices": []},
+            {"estado": "ok", "opcoes": [], "indices": []},
+        ])
+        ultima = {"estado": "ok", "opcoes": [], "indices": []}
+
+        class _Page:
+            async def evaluate(self, js, *a):
+                if "WheelEvent" in js:
+                    return 0
+                return next(leituras, ultima)
+            async def wait_for_timeout(self, ms): pass
+
+        opcoes = await _ui.expandir_listbox(_Page(), max_ciclos=2, passo_ms=50,
+                                            timeout_ms=100)
+        assert opcoes == ["a1", "a2", "a3"]
+
+    @pytest.mark.asyncio
+    async def test_crescimento_normal_continua_valendo(self):
+        estados = [
+            {"estado": "ok", "opcoes": ["a"] * 5, "indices": list(range(5))},
+            {"estado": "ok", "opcoes": ["a"] * 10, "indices": list(range(10))},
+        ]
+        idx = {"i": 0}
+
+        class _Page:
+            async def evaluate(self, js, *a):
+                if "WheelEvent" in js:
+                    idx["i"] = 1
+                    return 0
+                return estados[idx["i"]]
+            async def wait_for_timeout(self, ms): pass
+
+        opcoes = await _ui.expandir_listbox(_Page(), max_ciclos=3, passo_ms=50,
+                                            timeout_ms=200)
+        assert len(opcoes) == 10

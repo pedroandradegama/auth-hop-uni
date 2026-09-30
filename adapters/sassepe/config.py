@@ -74,3 +74,20 @@ BROWSER_HEADLESS = os.environ.get("BROWSER_HEADLESS", "true").lower() == "true"
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 # Evidencias do Sassepe ficam separadas das do Unimed.
 SCREENSHOTS_DIR = os.path.join(BASE_DIR, "evidencias")
+
+
+# ── Diagnostico controlado de dropdowns ────────────────────────────────────
+# Fica desligado no fluxo normal: a telemetria inclui termos de busca e nomes
+# de profissionais, portanto so' deve ser ligada para um canario investigado.
+def telemetria_dropdown_habilitada() -> bool:
+    return os.environ.get("SASSEPE_TELEMETRIA_DROPDOWN", "false").lower() == "true"
+
+
+# Trace Playwright e' valioso para reproduzir uma falha de SPA, mas pode conter
+# dados exibidos no portal. Por isso e' opt-in e so' e' persistido quando o job
+# falha antes de concluir. O arquivo permanece na VPS: nao vai no callback.
+def trace_falhas_habilitado() -> bool:
+    return os.environ.get("SASSEPE_TRACE_FALHAS", "false").lower() == "true"
+
+
+TRACES_DIR = os.path.join(BASE_DIR, "traces")

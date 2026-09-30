@@ -18,9 +18,12 @@ Inputs React: NUNCA setar input.value via JS (nao dispara o estado). Sempre
 clicar + digitar pelo teclado (page.keyboard), como aqui.
 """
 import difflib
+import json
 import unicodedata
 from dataclasses import dataclass
 from enum import Enum
+
+from . import config
 
 # Tolerancia a erro de grafia no nome do medico (ver casa_tokens). 0.82 aceita
 # letra transposta e troca de uma letra em sobrenome de tamanho normal, e recusa
@@ -185,16 +188,41 @@ _JS_SCROLL_LABEL = """
 _JS_WHEEL_LISTBOX = """
 () => {
   const lb = document.querySelector('[role=listbox]');
-  if (!lb) return 0;
+  if (!lb) return {encontrado: false};
   const rolavel = (el) => el.scrollHeight - el.clientHeight > 4;
   let alvo = lb;
   if (!rolavel(alvo)) {
     alvo = Array.from(lb.querySelectorAll('*')).find(rolavel) || lb;
   }
+  const antes = {scrollTop: alvo.scrollTop, scrollHeight: alvo.scrollHeight,
+                 clientHeight: alvo.clientHeight};
   const ev = () => new WheelEvent('wheel',
     {deltaY: 800, bubbles: true, cancelable: true, composed: true});
-  for (let i = 0; i < 3; i++) { alvo.dispatchEvent(ev()); }
-  return alvo.scrollHeight;
+  const despachados = [];
+  for (let i = 0; i < 3; i++) { despachados.push(alvo.dispatchEvent(ev())); }
+  return {encontrado: true, tag: alvo.tagName, antes, despachados,
+          depois: {scrollTop: alvo.scrollTop, scrollHeight: alvo.scrollHeight,
+                   clientHeight: alvo.clientHeight}};
+}
+"""
+
+
+# Leitura sem efeitos colaterais, feita apenas quando
+# SASSEPE_TELEMETRIA_DROPDOWN=true. Ela mostra se o elemento que recebeu o
+# WheelEvent realmente e' rolavel e se o browser moveu scrollTop — a distincao
+# que falta para separar "portal nao carregou" de "wheel sintetico nao rolou".
+_JS_METRICAS_LISTBOX = """
+() => {
+  const lb = document.querySelector('[role=listbox]');
+  if (!lb) return {aberto: false};
+  const rolavel = (el) => el.scrollHeight - el.clientHeight > 4;
+  const alvo = rolavel(lb)
+    ? lb
+    : Array.from(lb.querySelectorAll('*')).find(rolavel) || lb;
+  const medida = (el) => ({tag: el.tagName, scrollTop: el.scrollTop,
+    scrollHeight: el.scrollHeight, clientHeight: el.clientHeight,
+    maxScroll: Math.max(0, el.scrollHeight - el.clientHeight)});
+  return {aberto: true, listbox: medida(lb), alvo: medida(alvo)};
 }
 """
 
@@ -276,6 +304,28 @@ async def opcoes_do_listbox(page) -> list:
     return (await ler_listbox(page)).get("opcoes") or []
 
 
+async def diagnostico_listbox(page) -> dict:
+    """Snapshot do DOM do dropdown para um canario, sem interagir com ele."""
+    try:
+        metricas = await page.evaluate(_JS_METRICAS_LISTBOX)
+    except Exception as e:
+        return {"erro": f"metricas_listbox: {type(e).__name__}: {e}"}
+    leitura = await ler_listbox(page)
+    return {"metricas": metricas, "estado": leitura.get("estado"),
+            "qtd_opcoes": len(leitura.get("opcoes") or []),
+            "amostra": (leitura.get("opcoes") or [])[:8]}
+
+
+async def _telemetria_listbox(page, evento: str, **contexto) -> None:
+    """Emite uma linha JSON correlacionavel; nunca altera o fluxo nem falha."""
+    if not config.telemetria_dropdown_habilitada():
+        return
+    dado = await diagnostico_listbox(page)
+    print("[sassepe.dropdown] " + json.dumps(
+        {"evento": evento, **contexto, **dado}, ensure_ascii=False,
+        default=str), flush=True)
+
+
 def opcoes_coerentes(opcoes: list, termo: str) -> bool:
     """As opcoes correspondem AO TERMO digitado?
 
@@ -294,7 +344,14 @@ def opcoes_coerentes(opcoes: list, termo: str) -> bool:
     alvo = _norm(termo).split()
     if not alvo:
         return True
-    return any(alvo[0] in _norm(o) for o in opcoes)
+    # TODOS os tokens. Conferir so' o primeiro deixa passar a lista da consulta
+    # ANTERIOR quando os dois termos comecam igual — medido em 30/09:
+    #   termo='ALICE LECA VITAL DO CARMO' estado='ok' opcoes=5:
+    #     ['91762 - ACSA ALICE MARTINS ARAUJO', '91370 - ADRIANA ALICE ...', ...]
+    # que e' o resultado do termo anterior ('ALICE'). Uma resposta de verdade
+    # conteria 'LECA' tambem. Sobrenome extra no registro continua casando
+    # ('NUBIA ROSA LOPES' ⊂ 'NUBIA ROSA LOPES FREIRE').
+    return any(all(t in _norm(o) for t in alvo) for o in opcoes)
 
 
 async def _assinatura_listbox(page) -> str | None:
@@ -417,6 +474,8 @@ async def abrir_dropdown_tipado(page, label_text: str, search_term: str,
     # consulta anterior (ou a lista sem filtro). Guardar a assinatura e' o que
     # permite saber que o filtro DESTE termo chegou.
     antes = await _assinatura_listbox(page)
+    await _telemetria_listbox(page, "antes_busca", label=label_text,
+                              termo=search_term, assinatura_anterior=antes)
     if search_term:
         await page.keyboard.type(search_term)
     else:
@@ -436,6 +495,8 @@ async def abrir_dropdown_tipado(page, label_text: str, search_term: str,
         # distinguir os dois no caso do Regime de Atendimento (30/09).
         print(f"[campo] {label_text!r} termo={search_term!r} sem resposta: "
               f"estado={estado!r} opcoes={len(opcoes)}: {opcoes[:6]}", flush=True)
+        await _telemetria_listbox(page, "sem_resposta", label=label_text,
+                                  termo=search_term)
         if estado == "ok" and search_term and not opcoes_coerentes(opcoes, search_term):
             return MotivoCampo.RESPOSTA_INCOERENTE
         if estado == "vazio":
@@ -450,6 +511,8 @@ async def abrir_dropdown_tipado(page, label_text: str, search_term: str,
     # Um ciclo de lazy-load no caminho comum: mesmo teto do wait fixo de
     # 800ms que existia antes do poll. Quem precisa de mais (alvo fora dos
     # primeiros lotes) expande de novo, so' nesse caso.
+    await _telemetria_listbox(page, "resposta_aceita", label=label_text,
+                              termo=search_term)
     await expandir_listbox(page, max_ciclos=1, timeout_ms=800)
     return MotivoCampo.OK
 
@@ -470,12 +533,17 @@ async def expandir_listbox(page, max_ciclos: int = 4, passo_ms: int = 150,
     mesmo commit (as outras: placeholder de vazio e spinner).
     """
     opcoes = await opcoes_do_listbox(page)
+    melhor = list(opcoes)      # maior lista JA' VISTA nesta expansao
     for _ in range(max(1, max_ciclos)):
         antes = len(opcoes)
         try:
-            await page.evaluate(_JS_WHEEL_LISTBOX)
+            wheel = await page.evaluate(_JS_WHEEL_LISTBOX)
         except Exception:
             break
+        if config.telemetria_dropdown_habilitada():
+            print("[sassepe.dropdown] " + json.dumps(
+                {"evento": "wheel_despachado", "qtd_antes": antes,
+                 "wheel": wheel}, ensure_ascii=False, default=str), flush=True)
         gasto = 0
         while gasto < timeout_ms:
             await page.wait_for_timeout(passo_ms)
@@ -483,8 +551,21 @@ async def expandir_listbox(page, max_ciclos: int = 4, passo_ms: int = 150,
             opcoes = await opcoes_do_listbox(page)
             if len(opcoes) > antes:
                 break
+        if len(opcoes) > len(melhor):
+            melhor = list(opcoes)
+        await _telemetria_listbox(page, "apos_wheel", qtd_antes=antes,
+                                  qtd_depois=len(opcoes))
         if len(opcoes) <= antes:
             break            # parou de crescer: lista completa
+    # Rolar nunca pode DIMINUIR o que o portal ja' tinha oferecido. Em 30/09 o
+    # log registrou `opcoes=5` e, na linha seguinte, `apos expandir: opcoes=0`:
+    # o scroll derrubou a lista (re-render, ou o componente descartando o lote
+    # ao pedir o proximo). Devolver o vazio faz o adapter concluir "o portal nao
+    # tem" — o oposto do que ele tinha acabado de mostrar.
+    if len(opcoes) < len(melhor):
+        print(f"[listbox] expandir reduziu a lista ({len(melhor)} -> "
+              f"{len(opcoes)}); mantendo a maior ja' vista", flush=True)
+        return melhor
     return opcoes
 
 
