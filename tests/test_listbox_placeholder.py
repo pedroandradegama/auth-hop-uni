@@ -917,3 +917,70 @@ class TestExpandirNaoPodeEncolher:
         opcoes = await _ui.expandir_listbox(_Page(), max_ciclos=3, passo_ms=50,
                                             timeout_ms=200)
         assert len(opcoes) == 10
+
+
+class TestFormularioTemQueRenderizarAntes:
+    """30/set, dois jobs (18:10:32 e 18:31:59):
+
+        [solicitante] termo='21798': campo_ausente
+        [solicitante] termo='PEDRO ANDRADE GAMA DE OLIVEIRA': campo_ausente
+        [solicitante] termo='PEDRO ANDRADE': campo_ausente
+        [solicitante] termo='PEDRO': campo_ausente
+
+    Quatro termos, campo ausente nos quatro. Não era o médico nem o portal: o
+    formulário SP/SADT ainda não tinha sido montado pelo SPA. Selecionar o
+    beneficiário não garante que a tela existe.
+
+    Sem essa espera, a falha chega ao operador como se fosse cadastro do
+    profissional — exatamente o tipo de diagnóstico errado que fez abrirem
+    chamado com o convênio em 28/09.
+    """
+
+    def _page(self, aparece_no_poll):
+        class _Page:
+            def __init__(self): self.polls = 0
+            async def evaluate(self, js, *a):
+                self.polls += 1
+                return self.polls >= aparece_no_poll
+            async def wait_for_timeout(self, ms): pass
+        return _Page()
+
+    @pytest.mark.asyncio
+    async def test_espera_a_tela_aparecer(self):
+        page = self._page(aparece_no_poll=5)
+        assert await _ui.esperar_formulario(page, timeout_ms=3000,
+                                            passo_ms=300) is True
+
+    @pytest.mark.asyncio
+    async def test_sai_assim_que_aparece(self):
+        page = self._page(aparece_no_poll=1)
+        assert await _ui.esperar_formulario(page, timeout_ms=3000,
+                                            passo_ms=300) is True
+        assert page.polls == 1
+
+    @pytest.mark.asyncio
+    async def test_respeita_o_teto(self):
+        page = self._page(aparece_no_poll=10**6)
+        assert await _ui.esperar_formulario(page, timeout_ms=900,
+                                            passo_ms=300) is False
+
+    @pytest.mark.asyncio
+    async def test_evaluate_derrubado_pelo_spa_nao_encerra_o_poll(self):
+        class _Page:
+            def __init__(self): self.n = 0
+            async def evaluate(self, js, *a):
+                self.n += 1
+                if self.n == 1:
+                    raise RuntimeError("Execution context was destroyed")
+                return True
+            async def wait_for_timeout(self, ms): pass
+        assert await _ui.esperar_formulario(_Page(), timeout_ms=3000,
+                                            passo_ms=300) is True
+
+    def test_a_falha_e_transitoria_e_nao_vai_para_o_agente(self):
+        from agente import MOTIVOS_AGENTE, MotivoFalha
+        submit = importlib.import_module("adapters.sassepe.submit")
+        corpo = inspect.getsource(submit._preencher_cabecalho)
+        assert "esperar_formulario(page)" in corpo
+        assert "MotivoFalha.CAMPO_NAO_PREENCHIDO" in corpo
+        assert MotivoFalha.CAMPO_NAO_PREENCHIDO not in MOTIVOS_AGENTE

@@ -363,6 +363,20 @@ async def _preencher_cabecalho(page, medico: str, crm_job: str | None = None):
     """Checkbox + solicitante (variavel) + CBO + executante (fixo) + CBO +
     regime/especialidade/carater/tipo (fixos). Cada passo e' hard stop (I1):
     campo que nao preenche aborta antes de qualquer gravar."""
+    # A tela do formulario e' montada pelo SPA DEPOIS de o beneficiario ser
+    # selecionado. Comecar a preencher antes disso faz cada campo reportar
+    # "ausente" — em 30/09, dois jobs deram `campo_ausente` nos quatro termos do
+    # solicitante, o que parece problema de cadastro e nao era: a tela estava
+    # vazia. Esperar por presenca de label poe o motivo no lugar certo.
+    if not await _ui.esperar_formulario(page):
+        raise FalhaDeterministica(
+            motivo=MotivoFalha.CAMPO_NAO_PREENCHIDO,
+            etapa="submit_sassepe",
+            detalhe=("O formulario SP/SADT nao renderizou em 15s apos a selecao "
+                     "do beneficiario (nenhum campo de profissional na tela). "
+                     "Nada foi enviado ao portal — seguro reenfileirar."),
+            url=page.url,
+        )
     await _ui.marcar_paciente_no_local(page)
 
     # Profissional SOLICITANTE (variavel: vem do job). Busca por CRM + casa por

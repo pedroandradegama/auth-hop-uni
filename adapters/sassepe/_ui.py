@@ -925,6 +925,33 @@ async def preencher_cbo(page, indice: int = 0, tentativas: int = 5,
     return False
 
 
+async def esperar_formulario(page, labels: tuple = (), timeout_ms: int = 15000,
+                            passo_ms: int = 300) -> bool:
+    """Espera o formulario SP/SADT renderizar de fato, por PRESENCA DE LABEL.
+
+    Selecionar o beneficiario nao significa que o formulario ja' existe: o SPA
+    monta a tela depois, e o adapter comecava a preencher antes disso. Medido em
+    30/09 (18:10 e 18:31), dois jobs deram `campo_ausente` nos QUATRO termos do
+    solicitante — nao era o medico nem o portal, era a tela ainda vazia.
+
+    Falhar aqui e' melhor que falhar em cada campo: o motivo fica certo (tela
+    nao renderizou, transitorio, seguro reenfileirar) em vez de virar quatro
+    "campo ausente" que parecem problema de cadastro.
+    """
+    alvos = labels or ("Profissional solicitante", "Profissional executante")
+    gasto = 0
+    while gasto < max(timeout_ms, passo_ms):
+        for label in alvos:
+            try:
+                if await page.evaluate(_JS_SCROLL_LABEL, [label, 0]):
+                    return True
+            except Exception:
+                pass      # navegacao do SPA derrubou o evaluate: segue o poll
+        await page.wait_for_timeout(passo_ms)
+        gasto += passo_ms
+    return False
+
+
 async def marcar_paciente_no_local(page) -> bool:
     """Marca o checkbox 'Paciente no local' se ainda nao estiver marcado."""
     estado = await page.evaluate(

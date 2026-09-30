@@ -148,6 +148,10 @@ class TestCampoNaoPreenchido:
         async def _marcar(page): return True
         monkeypatch.setattr(_ui, "marcar_paciente_no_local", _marcar)
 
+        # A tela renderiza; o teste é sobre o CBO, não sobre a espera do form.
+        async def _form_pronto(page, **k): return True
+        monkeypatch.setattr(_ui, "esperar_formulario", _form_pronto)
+
         async def _solicitante(page, crm, nome): return "ok", ["16188 - X"]
         monkeypatch.setattr(_ui, "selecionar_solicitante", _solicitante)
 
