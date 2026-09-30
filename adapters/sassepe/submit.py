@@ -308,7 +308,10 @@ async def _buscar_e_selecionar_paciente(page, cpf: str):
 # A excecao e' OPCAO_AUSENTE: o portal respondeu e simplesmente nao tem aquele
 # valor. Repetir nao resolve; e' decisao humana (cadastro do profissional,
 # valor de configuracao errado, convenio que nao oferece).
-_MOTIVOS_CAMPO_HUMANO = {_ui.MotivoCampo.OPCAO_AUSENTE}
+# `lista_vazia` entra aqui junto com `opcao_ausente`: nos dois o portal
+# RESPONDEU e o registro nao existe. Reenfileirar so' repete a mesma resposta.
+_MOTIVOS_CAMPO_HUMANO = {_ui.MotivoCampo.OPCAO_AUSENTE,
+                         _ui.MotivoCampo.LISTA_VAZIA}
 
 
 def _falha_de_campo(page, label: str, r) -> FalhaDeterministica:
@@ -354,7 +357,7 @@ async def _preencher_cabecalho(page, medico: str, crm_job: str | None = None):
         # falta o CRM no cadastro do solicitante (gap conhecido do HOP).
         sem_crm = not (crm or "").strip()
         relato = "; ".join(candidatos) if candidatos else "nenhuma busca chegou a rodar"
-        raise SubmitAbortado(
+        texto = (
             f"Profissional solicitante '{medico}' nao localizado no dropdown"
             + (" — o job veio SEM CRM, e o portal indexa o solicitante por CRM; "
                "a busca so' por nome e' fragil. Resolver o CRM deste medico no "
@@ -363,6 +366,21 @@ async def _preencher_cabecalho(page, medico: str, crm_job: str | None = None):
                f" (buscado por CRM {crm}).")
             + f" O QUE O PORTAL RESPONDEU, por termo: {relato}."
         )
+        if status == "nao_cadastrado":
+            # O portal respondeu a TODOS os termos e nenhum trouxe o medico.
+            # Reenfileirar so' repete a mesma resposta; quem resolve e' quem
+            # corrige o CRM no cadastro ou pede o credenciamento ao convenio.
+            raise FalhaDeterministica(
+                motivo=MotivoFalha.PROCEDIMENTO_INDISPONIVEL,
+                etapa="submit_sassepe",
+                detalhe=texto + " A busca ESGOTOU (o portal respondeu a todos "
+                                "os termos): o medico nao consta no portal com "
+                                "este CRM nem com este nome. Conferir o CRM no "
+                                "cadastro ou solicitar credenciamento ao "
+                                "convenio — reprocessar nao muda o resultado.",
+                url=page.url,
+            )
+        raise SubmitAbortado(texto)
     await page.wait_for_timeout(500)
 
     if not await _ui.preencher_cbo(page, indice=0):  # CBO da secao SOLICITANTE

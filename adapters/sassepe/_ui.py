@@ -49,7 +49,8 @@ class MotivoCampo(str, Enum):
     """
     OK = "ok"
     CAMPO_AUSENTE = "campo_ausente"              # label nao esta' na tela
-    SEM_RESPOSTA = "sem_resposta"                # digitou e o portal nao respondeu
+    SEM_RESPOSTA = "sem_resposta"                # digitou e o portal ficou mudo
+    LISTA_VAZIA = "lista_vazia"                  # respondeu "Nenhum resultado"
     RESPOSTA_INCOERENTE = "resposta_incoerente"  # respondeu outra consulta
     OPCAO_AUSENTE = "opcao_ausente"              # respondeu, e o alvo nao esta' la'
     CLIQUE_SEM_EFEITO = "clique_sem_efeito"      # alvo na lista, clique nao pegou
@@ -403,6 +404,14 @@ async def abrir_dropdown_tipado(page, label_text: str, search_term: str,
               f"estado={estado!r} opcoes={len(opcoes)}: {opcoes[:6]}", flush=True)
         if estado == "ok" and search_term and not opcoes_coerentes(opcoes, search_term):
             return MotivoCampo.RESPOSTA_INCOERENTE
+        if estado == "vazio":
+            # O portal RESPONDEU: "Nenhum resultado". Nao e' transitorio e
+            # reenfileirar nao muda nada — o registro nao existe. Caso real
+            # (30/09, job 0d4466b9): 'ALICE LECA VITAL DO CARMO' devolveu vazio
+            # nos tres termos de nome, e o CRM 42085 trouxe cinco outras
+            # pessoas. Classificar isso como falha transitoria faz o job voltar
+            # a' fila e falhar para sempre, sem ninguem ser avisado.
+            return MotivoCampo.LISTA_VAZIA
         return MotivoCampo.SEM_RESPOSTA
     # Um ciclo de lazy-load no caminho comum: mesmo teto do wait fixo de
     # 800ms que existia antes do poll. Quem precisa de mais (alvo fora dos
@@ -541,7 +550,10 @@ async def preencher_dropdown_detalhado(page, label_text: str, search_term: str,
             MotivoCampo.CAMPO_AUSENTE:
                 f"o campo {label_text!r} nao estava na tela",
             MotivoCampo.SEM_RESPOSTA:
-                f"o portal nao respondeu a busca por {search_term!r}",
+                f"o portal nao respondeu a busca por {search_term!r} "
+                f"(nem lista, nem 'Nenhum resultado')",
+            MotivoCampo.LISTA_VAZIA:
+                f"o portal respondeu 'Nenhum resultado' para {search_term!r}",
             MotivoCampo.RESPOSTA_INCOERENTE:
                 f"o portal devolveu uma lista que nao corresponde a "
                 f"{search_term!r} (resposta de outra consulta)",
@@ -571,6 +583,20 @@ async def preencher_dropdown_detalhado(page, label_text: str, search_term: str,
 
 
 # JS: extrai os textos das opcoes do listbox aberto (dedup).
+# Motivos em que o portal RESPONDEU. Se todos os termos terminaram assim, a
+# busca foi conclusiva: o registro nao existe. Se algum termo foi transitorio
+# (portal mudo, campo fora da tela, lista de outra consulta), nao da' para
+# afirmar isso — e reenfileirar ainda faz sentido.
+_MOTIVOS_CONCLUSIVOS = {MotivoCampo.OK, MotivoCampo.LISTA_VAZIA}
+
+_TEXTO_MOTIVO = {
+    MotivoCampo.CAMPO_AUSENTE: "o campo nao estava na tela",
+    MotivoCampo.SEM_RESPOSTA: "o portal ficou mudo",
+    MotivoCampo.LISTA_VAZIA: "o portal respondeu 'Nenhum resultado'",
+    MotivoCampo.RESPOSTA_INCOERENTE: "o portal devolveu a lista de outra consulta",
+}
+
+
 async def selecionar_solicitante(page, crm: str | None, nome: str):
     """Seleciona o Profissional solicitante por CRM + nome (descoberto no portal:
     o dropdown casa por NOME e por CRM, e o prefixo exibido E' o CRM — que repete
@@ -581,8 +607,11 @@ async def selecionar_solicitante(page, crm: str | None, nome: str):
     extra: 'NUBIA ROSA LOPES' ⊂ 'NUBIA ROSA LOPES FREIRE'). Sem CRM, busca pelo
     proprio nome (menos confiavel: o listbox so' carrega ~10 itens).
 
-    Conservador (I3): so' clica com match UNICO. Retorna ('ok'|'nenhum'|
-    'ambiguo', X) — o chamador aborta para captura manual se != 'ok'. X e' a
+    Conservador (I3): so' clica com match UNICO. Retorna
+    ('ok'|'nao_cadastrado'|'nenhum'|'ambiguo', X) — 'nao_cadastrado' quando o
+    portal respondeu a TODOS os termos e nenhum trouxe o medico (busca esgotada,
+    decisao humana); 'nenhum' quando algum termo foi transitorio e vale
+    reenfileirar — o chamador aborta para captura manual se != 'ok'. X e' a
     lista de candidatos quando 'ambiguo', e o relato do que o portal respondeu
     por termo quando 'nenhum' (e' o que permite distinguir "o portal nao tem"
     de "o portal tem e nos recusamos").
@@ -611,14 +640,14 @@ async def selecionar_solicitante(page, crm: str | None, nome: str):
     # adivinhando se o dropdown veio vazio, veio cheio e nos e' que recusamos, ou
     # nem chegou a responder. Vai para o stdout e para a mensagem do operador.
     tentativas: list[str] = []
+    motivos: list = []
 
     for termo in termos:
-        if not await abrir_dropdown(page, "Profissional solicitante", termo):
-            print(f"[solicitante] termo={termo!r}: portal nao respondeu "
-                  f"(lista inalterada, incompativel com o termo, ou campo "
-                  f"ausente)", flush=True)
-            tentativas.append(f"{termo!r}: portal nao respondeu ao termo "
-                              f"(lista inalterada ou campo ausente)")
+        motivo = await abrir_dropdown_tipado(page, "Profissional solicitante", termo)
+        motivos.append(motivo)
+        if motivo is not MotivoCampo.OK:
+            print(f"[solicitante] termo={termo!r}: {motivo.value}", flush=True)
+            tentativas.append(f"{termo!r}: {_TEXTO_MOTIVO[motivo]}")
             continue
         leitura = await ler_listbox(page)
         opcoes = leitura.get("opcoes") or []
@@ -654,7 +683,13 @@ async def selecionar_solicitante(page, crm: str | None, nome: str):
         tentativas.append(f"{termo!r}: {len(opcoes)} opcoes, nenhuma casou "
                           f"({opcoes[:5]})")
 
-    return "nenhum", tentativas
+    # Todos os termos foram respondidos pelo portal e nenhum trouxe o medico:
+    # a busca esgotou, o registro nao existe. Caso real (30/09, job 0d4466b9):
+    # CRM 42085 devolveu cinco outros profissionais e os tres termos de nome
+    # devolveram "Nenhum resultado". Isso e' cadastro, nao falha tecnica — e
+    # tratar como transitorio faz o job voltar a' fila e falhar para sempre.
+    conclusivo = bool(motivos) and all(m in _MOTIVOS_CONCLUSIVOS for m in motivos)
+    return ("nao_cadastrado" if conclusivo else "nenhum"), tentativas
 
 
 # JS: valor do input que fica logo ABAIXO do N-esimo label com este texto.

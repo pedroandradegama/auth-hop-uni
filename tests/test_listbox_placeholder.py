@@ -182,7 +182,8 @@ class TestRelatoDoPortal:
         monkeypatch.setattr(_ui, "ler_listbox", _ler)
         status, relato = await _ui.selecionar_solicitante(
             None, "37499", "RODRIGO REBELLO FRANCA")
-        assert status == "nenhum"
+        # O portal abriu e respondeu vazio em todos os termos: busca esgotada.
+        assert status == "nao_cadastrado"
         assert any("37499" in r and "vazio" in r for r in relato)
 
     @pytest.mark.asyncio
@@ -197,7 +198,7 @@ class TestRelatoDoPortal:
         monkeypatch.setattr(_ui, "ler_listbox", _ler)
         status, relato = await _ui.selecionar_solicitante(
             None, "37499", "RODRIGO REBELLO FRANCA")
-        assert status == "nenhum"
+        assert status == "nao_cadastrado"
         assert any("nenhuma casou" in r for r in relato)
         assert any("OUTRA PESSOA" in r for r in relato)
 
@@ -716,3 +717,57 @@ class TestCorridaEntreClassificarEClicar:
 
         assert await _ui.clicar_primeira_opcao(_Page()) == "999999 - Nao Informado"
         assert clicados == [(3, 4)]
+
+
+class TestBuscaEsgotadaNaoVoltaParaAFila:
+    """30/set, job 0d4466b9 (ALICE LEÇA VITAL DO CARMO, CRM 42085).
+
+        termo='42085'                    estado='ok'    5 opções, nenhuma é ela
+        termo='ALICE LECA VITAL DO CARMO' estado='vazio' 0 opções
+        termo='ALICE LECA'                estado='vazio' 0 opções
+        termo='ALICE'                     estado='vazio' 0 opções
+
+    O portal respondeu a todos os termos. A médica não está lá. Classificar
+    isso como falha transitória faz o job voltar à fila e falhar para sempre,
+    sem ninguém ser avisado de que é cadastro.
+    """
+
+    @pytest.mark.asyncio
+    async def test_termo_transitorio_no_meio_mantem_o_job_reenfileiravel(
+            self, monkeypatch):
+        """Se UM termo não teve resposta, não dá para afirmar que esgotou."""
+        respostas = iter([_ui.MotivoCampo.SEM_RESPOSTA,
+                          _ui.MotivoCampo.LISTA_VAZIA,
+                          _ui.MotivoCampo.LISTA_VAZIA,
+                          _ui.MotivoCampo.LISTA_VAZIA])
+
+        async def _abrir(page, label, termo, indice=0):
+            return next(respostas, _ui.MotivoCampo.LISTA_VAZIA)
+        monkeypatch.setattr(_ui, "abrir_dropdown_tipado", _abrir)
+        status, _ = await _ui.selecionar_solicitante(
+            None, "42085", "ALICE LECA VITAL DO CARMO")
+        assert status == "nenhum"
+
+    @pytest.mark.asyncio
+    async def test_lista_vazia_em_todos_os_termos_esgota(self, monkeypatch):
+        async def _abrir(page, label, termo, indice=0):
+            return _ui.MotivoCampo.LISTA_VAZIA
+        monkeypatch.setattr(_ui, "abrir_dropdown_tipado", _abrir)
+        status, relato = await _ui.selecionar_solicitante(
+            None, "42085", "ALICE LECA VITAL DO CARMO")
+        assert status == "nao_cadastrado"
+        assert len(relato) == 4          # CRM + 3 variações de nome
+
+    def test_esgotado_vai_para_humano_e_nao_para_o_agente(self):
+        from agente import MOTIVOS_AGENTE, MOTIVOS_REQUER_HUMANO, MotivoFalha
+        submit = importlib.import_module("adapters.sassepe.submit")
+        corpo = inspect.getsource(submit._preencher_cabecalho)
+        assert 'if status == "nao_cadastrado":' in corpo
+        assert "MotivoFalha.PROCEDIMENTO_INDISPONIVEL" in corpo
+        assert MotivoFalha.PROCEDIMENTO_INDISPONIVEL not in MOTIVOS_AGENTE
+        assert MotivoFalha.PROCEDIMENTO_INDISPONIVEL in MOTIVOS_REQUER_HUMANO
+
+    def test_lista_vazia_de_campo_tambem_e_humano(self):
+        submit = importlib.import_module("adapters.sassepe.submit")
+        assert _ui.MotivoCampo.LISTA_VAZIA in submit._MOTIVOS_CAMPO_HUMANO
+        assert _ui.MotivoCampo.SEM_RESPOSTA not in submit._MOTIVOS_CAMPO_HUMANO
