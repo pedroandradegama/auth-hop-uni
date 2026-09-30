@@ -771,3 +771,71 @@ class TestBuscaEsgotadaNaoVoltaParaAFila:
         submit = importlib.import_module("adapters.sassepe.submit")
         assert _ui.MotivoCampo.LISTA_VAZIA in submit._MOTIVOS_CAMPO_HUMANO
         assert _ui.MotivoCampo.SEM_RESPOSTA not in submit._MOTIVOS_CAMPO_HUMANO
+
+
+class TestBuscaComAcento:
+    """30/set, job 0d4466b9. O portal guarda acentos — o próprio log traz
+    'IVO ALVES DE FRANÇA', 'NÁDIA RAQUEL', 'FLÁVIA MOREIRA'. Nós digitávamos o
+    termo normalizado sem acento:
+
+        termo='ALICE LECA VITAL DO CARMO'  -> vazio
+        termo='ALICE LECA'                 -> vazio
+
+    O cadastro do job traz 'ALICE LEÇA VITAL DO CARMO'. A normalização existe
+    para CASAR o que o portal devolve (tolerância a acento e grafia); aplicá-la
+    também ao termo digitado mutila a busca.
+    """
+
+    def test_termo_de_busca_preserva_acento(self):
+        assert _ui.nome_para_busca("Dra. Alice Leça Vital do Carmo") == \
+            "ALICE LEÇA VITAL DO CARMO"
+
+    def test_casamento_continua_sem_acento(self):
+        """A tolerância no casamento não pode ter sido perdida."""
+        assert _ui.limpar_nome_medico("Dra. Alice Leça Vital do Carmo") == \
+            "ALICE LECA VITAL DO CARMO"
+        assert _ui.casa_tokens(["ALICE", "LECA"],
+                               _ui._norm("42085 - ALICE LEÇA VITAL DO CARMO").split())
+
+    @pytest.mark.asyncio
+    async def test_tenta_com_acento_antes_de_sem(self, monkeypatch):
+        vistos = []
+
+        async def _abrir(page, label, termo, indice=0):
+            vistos.append(termo)
+            return _ui.MotivoCampo.LISTA_VAZIA
+        monkeypatch.setattr(_ui, "abrir_dropdown_tipado", _abrir)
+        await _ui.selecionar_solicitante(None, "42085", "Alice Leça Vital do Carmo")
+        assert vistos[0] == "42085"
+        assert "ALICE LEÇA VITAL DO CARMO" in vistos
+        assert "ALICE LECA VITAL DO CARMO" in vistos
+        assert vistos.index("ALICE LEÇA VITAL DO CARMO") < \
+            vistos.index("ALICE LECA VITAL DO CARMO")
+
+    @pytest.mark.asyncio
+    async def test_nome_sem_acento_nao_duplica_termos(self, monkeypatch):
+        vistos = []
+
+        async def _abrir(page, label, termo, indice=0):
+            vistos.append(termo)
+            return _ui.MotivoCampo.LISTA_VAZIA
+        monkeypatch.setattr(_ui, "abrir_dropdown_tipado", _abrir)
+        await _ui.selecionar_solicitante(None, "37499", "RODRIGO REBELLO FRANCA")
+        assert len(vistos) == len(set(vistos))
+        assert len(vistos) == 4          # CRM + 3 variações do nome
+
+
+class TestLazyLoadPrecisaChegarAoFim:
+    """30/set: `termo='ALICE' apos expandir: opcoes=10` — a lista travou em 10 e
+    a expansão não a fez crescer. Um único wheel de 300px não chega ao fim de
+    uma lista de 10 linhas, e o portal só pede o lote seguinte quando o scroll
+    encosta no fim."""
+
+    def test_o_wheel_procura_o_elemento_que_rola(self):
+        js = _ui._JS_WHEEL_LISTBOX
+        assert "scrollHeight" in js and "clientHeight" in js
+
+    def test_mais_de_um_evento_e_delta_maior(self):
+        js = _ui._JS_WHEEL_LISTBOX
+        assert "deltaY: 800" in js
+        assert "i < 3" in js

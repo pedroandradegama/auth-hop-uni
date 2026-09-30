@@ -114,17 +114,35 @@ def filtrar_candidatos(opcoes: list[str], tokens: list[str],
     return list(dict.fromkeys(achados))
 
 
-def limpar_nome_medico(nome: str) -> str:
-    """Remove prefixo de tratamento (Dr./Dra.) e normaliza. O pedido medico
-    costuma trazer 'Dra. Nubia Rosa Lopes'; o registro do portal nao tem o
-    prefixo (e pode ter sobrenome extra)."""
-    n = _norm(nome)
+def _sem_tratamento(n: str) -> str:
+    """Tira 'Dr.'/'Dra.' de um nome ja' em caixa alta."""
     for p in ("DRA.", "DR.", "DRA", "DR"):
         if n == p:
             return ""
         if n.startswith(p + " "):
             return n[len(p):].strip()
     return n
+
+
+def nome_para_busca(nome: str) -> str:
+    """Nome COM acento, para digitar no portal.
+
+    O portal guarda e casa acentos ('IVO ALVES DE FRANCA' aparece como 'FRANÇA',
+    e ha' 'NADIA'/'NÁDIA', 'FLAVIA'/'FLÁVIA' no cadastro). Digitar a versao sem
+    acento pode nao casar nada: em 30/09 (job 0d4466b9) 'ALICE LECA VITAL DO
+    CARMO' e 'ALICE LECA' devolveram "Nenhum resultado", enquanto o cadastro do
+    job traz 'ALICE LEÇA VITAL DO CARMO'.
+
+    A normalizacao sem acento continua valendo para CASAR o que o portal
+    devolveu — la' ela e' tolerancia, aqui era mutilacao do termo.
+    """
+    return _sem_tratamento(" ".join((nome or "").upper().split()))
+
+
+def limpar_nome_medico(nome: str) -> str:
+    """Remove prefixo de tratamento (Dr./Dra.) e normaliza SEM acento. Usado
+    para casar o registro do portal, nao para buscar (ver `nome_para_busca`)."""
+    return _sem_tratamento(_norm(nome))
 
 # JS reutilizado: acha o N-esimo label pelo texto (com ou sem "*") e devolve o
 # rect. `indice` resolve labels DUPLICADOS (ex.: "Código CBO" aparece nas secoes
@@ -156,11 +174,27 @@ _JS_SCROLL_LABEL = """
 }
 """
 
+# WheelEvent NO PROPRIO listbox — scroll por coordenada e scrollTop nao
+# disparam o handler React que carrega o lote seguinte.
+#
+# Tres eventos por chamada, com delta maior, e tambem no descendente que de fato
+# rola: em 30/09 a lista do solicitante travou em 10 itens e `expandir_listbox`
+# nao a fez crescer (`termo='ALICE' apos expandir: opcoes=10`). Um unico wheel
+# de 300px nao chega ao fim de uma lista de 10 linhas, e o portal so' pede o
+# proximo lote quando o scroll encosta no fim.
 _JS_WHEEL_LISTBOX = """
 () => {
   const lb = document.querySelector('[role=listbox]');
-  if (lb) lb.dispatchEvent(new WheelEvent('wheel',
-    {deltaY: 300, bubbles: true, cancelable: true, composed: true}));
+  if (!lb) return 0;
+  const rolavel = (el) => el.scrollHeight - el.clientHeight > 4;
+  let alvo = lb;
+  if (!rolavel(alvo)) {
+    alvo = Array.from(lb.querySelectorAll('*')).find(rolavel) || lb;
+  }
+  const ev = () => new WheelEvent('wheel',
+    {deltaY: 800, bubbles: true, cancelable: true, composed: true});
+  for (let i = 0; i < 3; i++) { alvo.dispatchEvent(ev()); }
+  return alvo.scrollHeight;
 }
 """
 
@@ -623,14 +657,21 @@ async def selecionar_solicitante(page, crm: str | None, nome: str):
     # portal RECUSA o nome completo longo ("SANDRA PAIVA BARBOSA" -> "Nenhum
     # resultado"). Buscar por menos tokens faz a lista carregar; o token-match
     # (todos os tokens ⊂ registro) desambigua e mantem o I3 (so' match unico).
+    # As variantes COM acento vao primeiro; as sem acento ficam como fallback
+    # (portal que normaliza do lado dele continua atendido). Quando o nome nao
+    # tem acento as duas coincidem e o dedup resolve.
+    tokens_br = [t for t in nome_para_busca(nome).split() if len(t) >= 2]
+
     termos = []
     if crm and str(crm).strip():
         termos.append(str(crm).strip())
-    if tokens:
-        termos.append(" ".join(tokens))            # nome completo
-        if len(tokens) >= 2:
-            termos.append(" ".join(tokens[:2]))    # 2 primeiros tokens
-        termos.append(tokens[0])                    # 1o token
+    for grupo in (tokens_br, tokens):
+        if not grupo:
+            continue
+        termos.append(" ".join(grupo))             # nome completo
+        if len(grupo) >= 2:
+            termos.append(" ".join(grupo[:2]))     # 2 primeiros tokens
+        termos.append(grupo[0])                     # 1o token
     termos = list(dict.fromkeys(termos))            # dedup, preserva ordem
     if not termos:
         return "nenhum", []
