@@ -18,3 +18,4 @@ evidencias/
 traces/
 
 outbox/
+.autorizador.lock

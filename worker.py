@@ -476,6 +476,27 @@ async def drenar(max_jobs: int = 50):
           flush=True)
 
 
+def _limite_drenagem_do_ambiente() -> int:
+    """Teto de jobs de uma execucao cron; permite canario de exatamente 1.
+
+    O padrao continua 50, portanto o cron normal nao muda. O canario deve
+    configurar `DRENAR_MAX_JOBS=1` *e* deixar um job SASSEPE conhecido no topo
+    da fila: o endpoint de claim ainda e' generico e nao filtra convenio.
+    """
+    bruto = os.environ.get("DRENAR_MAX_JOBS", "50")
+    try:
+        limite = int(bruto)
+    except ValueError as e:
+        raise RuntimeError(
+            f"DRENAR_MAX_JOBS invalido: {bruto!r}; use inteiro >= 1."
+        ) from e
+    if limite < 1:
+        raise RuntimeError(
+            f"DRENAR_MAX_JOBS invalido: {limite}; use inteiro >= 1."
+        )
+    return limite
+
+
 def _instalar_sinais(laco):
     for sig in (signal.SIGTERM, signal.SIGINT):
         try:
@@ -495,7 +516,7 @@ def main():
         if modo == "daemon":
             laco.run_until_complete(loop())
         else:
-            laco.run_until_complete(drenar())
+            laco.run_until_complete(drenar(max_jobs=_limite_drenagem_do_ambiente()))
     finally:
         laco.close()
 

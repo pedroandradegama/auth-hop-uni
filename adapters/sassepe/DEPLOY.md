@@ -43,6 +43,23 @@ python adapters/sassepe/teste_login.py                # login real (so' loga)
 python adapters/sassepe/teste_submit.py               # ⚠️ GERA GUIA REAL
 ```
 
+## Canario de diagnostico (um job)
+
+Use quando houver um defeito investigado de dropdown. Primeiro isole no HOP um
+unico job **SASSEPE** conhecido no topo da fila; o endpoint de claim do worker
+e' generico e nao aceita filtro por convenio. Em seguida, na VPS, rode:
+
+```
+cd /opt/imag-autorizador
+CANARIO_SASSEPE_DIAG=true ./run_autorizador.sh
+```
+
+O script carrega `.env`, limita a drenagem a um job, liga telemetria/trace e
+usa o mesmo lock do cron. Se o cron ja estiver rodando, ele nao disputa o lease.
+O trace e salvo apenas em falha em `adapters/sassepe/traces/`; ele pode conter
+dados do portal e nao e' enviado ao HOP. Remova ou restrinja o acesso ao arquivo
+depois da analise.
+
 ## Notas
 
 - Identificador = **CPF** (Sassepe nao tem carteirinha). Exigiu `cpf` no schema.
