@@ -421,7 +421,8 @@ async def loop():
     print(">> poller encerrado.", flush=True)
 
 
-async def _drenar_fila(client, pollar, lote: int, restante: int) -> int:
+async def _drenar_fila(client, pollar, lote: int, restante: int,
+                        fila: str) -> int:
     """Drena ate' `lote` itens de UMA fila (ou ate' 204/erro/`restante`).
     Retorna quantos processou nesta rodada."""
     n = 0
@@ -430,7 +431,13 @@ async def _drenar_fila(client, pollar, lote: int, restante: int) -> int:
             if not await pollar(client):
                 break  # 204 -> fila vazia
         except Exception as e:
-            print(f"[poll] erro: {e}", flush=True)
+            # O detalhe continua no log, mas fila+classe permitem diagnosticar
+            # sem ler payloads ou mensagens potencialmente sensiveis. Em 06/10
+            # havia centenas de `[poll] erro` e nenhum submit SASSEPE: sem esta
+            # separacao nem dava para saber se falhava a fila principal ou a de
+            # verificacao antes de o browser abrir.
+            print(f"[poll] erro fila={fila} classe={type(e).__name__}: {e}",
+                  flush=True)
             break
         n += 1
     return n
@@ -462,13 +469,15 @@ async def drenar(max_jobs: int = 50):
     async with httpx.AsyncClient(timeout=30) as client:
         while total_s + total_v < max_jobs:
             restante = max_jobs - (total_s + total_v)
-            fez_s = await _drenar_fila(client, _pollar_uma_vez, lote, restante)
+            fez_s = await _drenar_fila(client, _pollar_uma_vez, lote, restante,
+                                        fila="submit")
             total_s += fez_s
             fez_v = 0
             if verif_on:
                 restante = max_jobs - (total_s + total_v)
                 fez_v = await _drenar_fila(
-                    client, _pollar_verificacao_uma_vez, lote, restante)
+                    client, _pollar_verificacao_uma_vez, lote, restante,
+                    fila="verificacao")
                 total_v += fez_v
             if fez_s == 0 and fez_v == 0:
                 break  # ambas as filas vazias
