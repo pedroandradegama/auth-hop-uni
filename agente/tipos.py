@@ -25,6 +25,10 @@ class MotivoFalha(str, Enum):
     # concluiu "a rota do portal mudou" para um robô que já estava dentro
     # do formulário.
     PROCEDIMENTO_INDISPONIVEL = "procedimento_indisponivel"
+    # A busca do beneficiario respondeu explicitamente vazia. Nao e' falha de
+    # layout nem de procedimento: antes de reenfileirar, uma pessoa precisa
+    # conferir o CPF/cadastro e a elegibilidade no portal.
+    BENEFICIARIO_NAO_ENCONTRADO = "beneficiario_nao_encontrado"
     # Campo obrigatorio do formulario nao ficou preenchido ANTES de submeter.
     # Nada foi enviado ao portal, entao e' seguro reenfileirar — e' falha
     # transitoria de carregamento, nao decisao humana nem layout quebrado.
@@ -48,6 +52,7 @@ MOTIVOS_AGENTE = {
 MOTIVOS_REQUER_HUMANO = {
     MotivoFalha.WAF_CAPTCHA,
     MotivoFalha.PROCEDIMENTO_INDISPONIVEL,
+    MotivoFalha.BENEFICIARIO_NAO_ENCONTRADO,
 }
 
 

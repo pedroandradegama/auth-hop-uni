@@ -267,8 +267,13 @@ async def _abrir_sp_sadt(page):
 
 
 async def _buscar_e_selecionar_paciente(page, cpf: str):
-    """Digita o CPF e seleciona a 1a linha de resultado. HARD STOP (I1): se
-    nenhum resultado aparece, o beneficiario nao foi encontrado -> aborta."""
+    """Busca o CPF e seleciona uma linha REAL de beneficiario.
+
+    A tela devolve ``Nenhum beneficiario encontrado`` dentro da mesma area onde
+    apareceria uma linha. A heuristica antiga clicava qualquer elemento abaixo
+    do input e, portanto, aceitava essa propria mensagem como selecao. A etapa
+    seguinte esperava o formulario que nunca seria montado e mascarava a causa.
+    """
     # O input do CPF e' React e pode demorar a renderizar: poll ate' 12s.
     pos = None
     for _ in range(12):
@@ -291,34 +296,75 @@ async def _buscar_e_selecionar_paciente(page, cpf: str):
     await page.keyboard.type(cpf)
     await page.wait_for_timeout(2000)
 
-    async def _achar_linha():
+    async def _resultado_da_busca():
         return await page.evaluate(
             """(b) => {
-              const vw = window.innerWidth;
-              const rows = Array.from(document.querySelectorAll('*')).filter(e => {
+              const visivel = e => {
                 const r = e.getBoundingClientRect();
-                return r.top > b && r.top < b + 200 && r.height > 20
-                  && r.height < 150 && r.width > 200 && r.left >= 0 && r.right <= vw;
+                const s = getComputedStyle(e);
+                return r.width > 0 && r.height > 0 && s.visibility !== 'hidden'
+                  && s.display !== 'none';
+              };
+              const texto = e => (e.innerText || e.textContent || '')
+                .replace(/\\s+/g, ' ').trim();
+              const normalizar = s => s.normalize('NFD')
+                .replace(/[\\u0300-\\u036f]/g, '').toLowerCase();
+              const elementos = Array.from(document.querySelectorAll('*'))
+                .filter(visivel);
+              const vazio = elementos.some(e => {
+                const t = normalizar(texto(e));
+                return t === 'nenhum beneficiario encontrado'
+                  || t === 'nenhum beneficiario foi encontrado'
+                  || t === 'nenhum resultado encontrado'
+                  || t === 'nenhum resultado';
               });
-              if (!rows.length) return null;
+              if (vazio) return {estado: 'vazio'};
+
+              const vw = window.innerWidth;
+              const rows = elementos.filter(e => {
+                const r = e.getBoundingClientRect();
+                const t = normalizar(texto(e));
+                return r.top > b && r.top < b + 240 && r.height > 20
+                  && r.height < 150 && r.width > 200 && r.left >= 0 && r.right <= vw
+                  && t.length > 2 && !t.includes('nenhum beneficiario')
+                  && !t.includes('nenhum resultado');
+              });
+              if (!rows.length) return {estado: 'aguardando'};
               const r = rows[0].getBoundingClientRect();
-              return {cx: r.x + r.width / 2, cy: r.y + r.height / 2};
+              return {estado: 'resultado', cx: r.x + r.width / 2,
+                      cy: r.y + r.height / 2};
             }""",
             pos["bottom"],
         )
 
-    linha = await _achar_linha()
-    if not linha:
-        await page.keyboard.press("Enter")
-        await page.wait_for_timeout(1500)
-        linha = await _achar_linha()
-    if not linha:
-        raise SubmitAbortado(f"Nenhum beneficiario encontrado para o CPF '{cpf}'.")
+    resultado = {"estado": "aguardando"}
+    for _ in range(30):  # API do portal pode levar ate' ~15s para responder.
+        resultado = await _resultado_da_busca()
+        if resultado["estado"] != "aguardando":
+            break
+        await page.wait_for_timeout(500)
 
-    await page.mouse.click(linha["cx"], linha["cy"])
-    await page.wait_for_load_state("domcontentloaded")
-    await page.wait_for_timeout(2000)
-    await page.mouse.click(linha["cx"], linha["cy"])  # confirma selecao
+    if resultado["estado"] == "vazio":
+        raise FalhaDeterministica(
+            motivo=MotivoFalha.BENEFICIARIO_NAO_ENCONTRADO,
+            etapa="buscar_beneficiario_sassepe",
+            detalhe=("O portal respondeu 'Nenhum beneficiario encontrado' para "
+                     "o CPF informado. Nada foi enviado ao portal. Conferir o "
+                     "CPF, o cadastro/elegibilidade do beneficiario no Sassepe "
+                     "antes de reenfileirar."),
+            url=page.url,
+        )
+    if resultado["estado"] != "resultado":
+        raise FalhaDeterministica(
+            motivo=MotivoFalha.CAMPO_NAO_PREENCHIDO,
+            etapa="buscar_beneficiario_sassepe",
+            detalhe=("A busca de beneficiario nao respondeu em 15s (sem linha "
+                     "nem resposta vazia). Nada foi enviado ao portal — seguro "
+                     "reenfileirar."),
+            url=page.url,
+        )
+
+    await page.mouse.click(resultado["cx"], resultado["cy"])
     await page.wait_for_load_state("domcontentloaded")
     await page.wait_for_timeout(2000)
 
