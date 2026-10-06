@@ -51,11 +51,12 @@ e' generico e nao aceita filtro por convenio. Em seguida, na VPS, rode:
 
 ```
 cd /opt/imag-autorizador
-CANARIO_SASSEPE_DIAG=true ./run_autorizador.sh
+./run_sassepe_canary.sh
 ```
 
 O script carrega `.env`, limita a drenagem a um job, liga telemetria/trace e
-usa o mesmo lock do cron. Se o cron ja estiver rodando, ele nao disputa o lease.
+usa o mesmo lock do cron (`/tmp/autorizador.lock`). Se o cron ja estiver rodando,
+ele nao disputa o lease.
 O trace e salvo apenas em falha em `adapters/sassepe/traces/`; ele pode conter
 dados do portal e nao e' enviado ao HOP. Remova ou restrinja o acesso ao arquivo
 depois da analise.

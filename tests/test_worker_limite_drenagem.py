@@ -24,8 +24,7 @@ def test_limite_invalido_recusa_drenagem(monkeypatch, valor):
         worker._limite_drenagem_do_ambiente()
 
 
-def test_script_do_canario_reusa_lock_e_limite():
-    script = open("run_autorizador.sh", encoding="utf-8").read()
-    assert "CANARIO_SASSEPE_DIAG" in script
+def test_script_do_canario_reusa_lock_do_cron_e_limite():
+    script = open("run_sassepe_canary.sh", encoding="utf-8").read()
     assert "DRENAR_MAX_JOBS=1" in script
-    assert "flock -n 9" in script
+    assert "/usr/bin/flock -n /tmp/autorizador.lock" in script
