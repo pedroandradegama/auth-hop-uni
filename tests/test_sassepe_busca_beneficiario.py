@@ -6,6 +6,15 @@ import pytest
 from agente import FalhaDeterministica, MOTIVOS_AGENTE, MOTIVOS_REQUER_HUMANO, MotivoFalha
 
 
+def test_valor_do_dropdown_precisa_confirmar_a_opcao_clicada():
+    ui = importlib.import_module("adapters.sassepe._ui")
+    assert ui._valor_confirma_opcao("01 - Ambulatorial", "01 - Ambulatorial")
+    assert ui._valor_confirma_opcao("40901122 - Exame", "40901122 - Exame")
+    assert not ui._valor_confirma_opcao("ambulatorial", "01 - Ambulatorial")
+    assert not ui._valor_confirma_opcao("40901122", "40901122 - Exame")
+    assert not ui._valor_confirma_opcao(None, "22")
+
+
 class _Mouse:
     async def click(self, *args):
         return None

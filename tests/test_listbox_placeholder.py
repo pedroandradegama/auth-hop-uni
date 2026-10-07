@@ -430,8 +430,12 @@ class TestRelatoDosCamposFixos:
         monkeypatch.setattr(_ui, "abrir_dropdown_tipado", _abrir)
         monkeypatch.setattr(_ui, "ler_listbox", _ler)
         monkeypatch.setattr(_ui, "clicar_opcao_listbox", _clicar)
+        async def _valor(page, label, indice=0): return "01 - Ambulatorial"
+        monkeypatch.setattr(_ui, "valor_do_campo", _valor)
+        class _Page:
+            async def wait_for_timeout(self, ms): pass
         r = await _ui.preencher_dropdown_detalhado(
-            None, "Regime de Atendimento", "ambulatorial", "01 - Ambulatorial")
+            _Page(), "Regime de Atendimento", "ambulatorial", "01 - Ambulatorial")
         assert r.ok and r.detalhe == ""
 
     def test_a_falha_de_campo_fixo_e_tipada(self):
@@ -559,8 +563,12 @@ class TestRelatoDosCamposFixos:
         monkeypatch.setattr(_ui, "abrir_dropdown_tipado", _abrir)
         monkeypatch.setattr(_ui, "ler_listbox", _ler)
         monkeypatch.setattr(_ui, "clicar_opcao_listbox", _clicar)
+        async def _valor(page, label, indice=0): return "01 - Ambulatorial"
+        monkeypatch.setattr(_ui, "valor_do_campo", _valor)
+        class _Page:
+            async def wait_for_timeout(self, ms): pass
         r = await _ui.preencher_dropdown_detalhado(
-            None, "Regime de Atendimento", "ambulatorial", "01 - Ambulatorial")
+            _Page(), "Regime de Atendimento", "ambulatorial", "01 - Ambulatorial")
         assert r.ok and r.detalhe == ""
 
     def test_a_falha_de_campo_fixo_e_tipada(self):

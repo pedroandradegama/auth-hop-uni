@@ -543,7 +543,7 @@ async def _adicionar_exame(page, codigo: str, qty: int):
     if not await _tabela_ja_selecionada(page):
         if not await _ui.preencher_dropdown(page, "Tabela", config.TABELA_NUM,
                                             config.TABELA_NUM):
-            return False, "Tabela 22 nao selecionada."
+            return False, f"Tabela {config.TABELA_NUM} nao selecionada."
         await page.wait_for_timeout(500)
 
     if not await _ui.preencher_dropdown(
@@ -560,6 +560,9 @@ async def _adicionar_exame(page, codigo: str, qty: int):
         except Exception:
             opcoes = None
         if opcoes:
+            if any(codigo in opcao for opcao in opcoes):
+                return False, (f"Codigo '{codigo}' apareceu na lista, mas a "
+                               "selecao nao foi confirmada pelo portal.")
             amostra = "; ".join(opcoes[:5])
             return False, (f"Codigo '{codigo}' nao casou com nenhuma opcao. "
                            f"Portal ofereceu {len(opcoes)}: {amostra}")
@@ -608,6 +611,13 @@ async def _adicionar_exame(page, codigo: str, qty: int):
     await page.mouse.click(add["cx"], add["cy"])
     await page.wait_for_load_state("domcontentloaded")
     await page.wait_for_timeout(2000)
+
+    # O botao pode ser clicado com o formulario ainda invalido. Nao declarar
+    # sucesso so porque o evento foi despachado: a mensagem do portal e' a
+    # evidencia autoritativa de que nenhum item entrou.
+    erros = await _erros_visiveis(page)
+    if erros:
+        return False, "Portal recusou adicionar o procedimento: " + " | ".join(erros)
     return True, None
 
 
@@ -871,6 +881,19 @@ async def executar(job: dict) -> dict:
                                        f"{config.TABELA_NUM} do portal. Revisar o "
                                        f"codigo do exame ou autorizar por outro "
                                        f"canal."),
+                              url=page.url,
+                              screenshot_path=tela,
+                          )
+                      if erro.startswith("Portal recusou adicionar"):
+                          # O portal manteve a pagina 1 e declarou que algum
+                          # obrigatorio nao ficou gravado. Ainda nao houve ato
+                          # irreversivel; e' uma corrida/transicao da SPA, nao
+                          # um caso para o agente reconstruir do zero.
+                          raise FalhaDeterministica(
+                              motivo=MotivoFalha.CAMPO_NAO_PREENCHIDO,
+                              etapa="submit_sassepe",
+                              detalhe=(f"{erro}. Nada foi enviado ao portal — "
+                                       "seguro reenfileirar."),
                               url=page.url,
                               screenshot_path=tela,
                           )

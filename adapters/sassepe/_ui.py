@@ -636,6 +636,26 @@ def _opcao_presente(opcoes: list, option_text: str) -> bool:
     return any(o.strip() == alvo or alvo in o for o in opcoes)
 
 
+def _texto_da_opcao(opcoes: list, option_text: str) -> str:
+    """Texto completo da opcao que sera' gravado pelo campo."""
+    alvo = (option_text or "").strip()
+    return next((o for o in opcoes if o.strip() == alvo),
+                next((o for o in opcoes if alvo and alvo in o), alvo))
+
+
+def _valor_confirma_opcao(valor: str | None, option_text: str) -> bool:
+    """O valor visivel confirma que o clique realmente foi aceito pelo SPA.
+
+    O portal aceita o evento de mouse antes de atualizar o input. Sem esta
+    checagem, um clique ignorado parecia sucesso e o fluxo seguia com campos
+    obrigatorios vazios (incidente de 07/10). O texto configurado pode ser so o
+    codigo (``22`` ou ``40901122``), enquanto o campo mostra codigo + descricao.
+    """
+    atual = _norm(valor or "")
+    alvo = _norm(option_text or "")
+    return bool(atual and alvo and (atual == alvo or alvo in atual))
+
+
 async def preencher_dropdown(page, label_text: str, search_term: str,
                              option_text: str) -> bool:
     """abrir_dropdown + clicar_opcao. Retorna True so' se a opcao foi clicada."""
@@ -688,13 +708,29 @@ async def preencher_dropdown_detalhado(page, label_text: str, search_term: str,
             f"e nenhuma e' {option_text!r}: {opcoes[:8]}",
             tuple(opcoes))
 
+    opcao_selecionada = _texto_da_opcao(opcoes, option_text)
     if not await clicar_opcao_listbox(page, option_text):
         return ResultadoCampo(
             MotivoCampo.CLIQUE_SEM_EFEITO,
             f"{option_text!r} estava na lista mas o clique nao encontrou o "
             f"elemento (lista de {len(opcoes)})",
             tuple(opcoes))
-    return ResultadoCampo(MotivoCampo.OK, "", tuple(opcoes))
+
+    # O clique por coordenada pode ser engolido pelo React durante um re-render.
+    # Esperar o valor evita que um input ainda contendo o termo de busca seja
+    # confundido com selecao. E' deliberadamente uma confirmacao do DOM, nao
+    # apenas do evento de click.
+    ultimo_valor = None
+    for _ in range(8):
+        ultimo_valor = await valor_do_campo(page, label_text, indice)
+        if _valor_confirma_opcao(ultimo_valor, opcao_selecionada):
+            return ResultadoCampo(MotivoCampo.OK, "", tuple(opcoes))
+        await page.wait_for_timeout(250)
+    return ResultadoCampo(
+        MotivoCampo.CLIQUE_SEM_EFEITO,
+        f"{option_text!r} foi clicado, mas o campo permaneceu em "
+        f"{ultimo_valor!r}",
+        tuple(opcoes))
 
 
 # JS: extrai os textos das opcoes do listbox aberto (dedup).
