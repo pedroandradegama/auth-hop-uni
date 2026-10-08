@@ -663,9 +663,9 @@ async def preencher_dropdown(page, label_text: str, search_term: str,
                                                    search_term, option_text))
 
 
-async def preencher_dropdown_detalhado(page, label_text: str, search_term: str,
-                                       option_text: str,
-                                       indice: int = 0) -> ResultadoCampo:
+async def _preencher_dropdown_uma_vez(page, label_text: str, search_term: str,
+                                      option_text: str,
+                                      indice: int = 0) -> ResultadoCampo:
     """Como `preencher_dropdown`, mas devolve POR QUE nao deu e o que o portal
     ofereceu (ver `MotivoCampo`).
 
@@ -731,6 +731,42 @@ async def preencher_dropdown_detalhado(page, label_text: str, search_term: str,
         f"{option_text!r} foi clicado, mas o campo permaneceu em "
         f"{ultimo_valor!r}",
         tuple(opcoes))
+
+
+# Estes estados ocorrem antes de qualquer efeito de negocio e podem ser
+# refeitos com seguranca. Os demais sao resposta conclusiva do portal e nao
+# devem ser mascarados por retries (lista vazia/opcao ausente).
+_MOTIVOS_RETRY_DROPDOWN = {
+    MotivoCampo.CAMPO_AUSENTE,
+    MotivoCampo.SEM_RESPOSTA,
+    MotivoCampo.RESPOSTA_INCOERENTE,
+    MotivoCampo.CLIQUE_SEM_EFEITO,
+}
+
+
+async def preencher_dropdown_detalhado(page, label_text: str, search_term: str,
+                                       option_text: str,
+                                       indice: int = 0,
+                                       tentativas: int = 2) -> ResultadoCampo:
+    """Preenche e CONFIRMA um dropdown, com retry somente de estado transitório.
+
+    A primeira tentativa pode cair no intervalo entre o render e a hidratação
+    do React. Reabrir e buscar de novo e' seguro porque ainda nao houve envio
+    nem inclusao de procedimento. Respostas conclusivas do portal nao recebem
+    retry para evitar latencia inutil e diagnostico enganoso.
+    """
+    ultimo = None
+    for tentativa in range(max(1, tentativas)):
+        ultimo = await _preencher_dropdown_uma_vez(
+            page, label_text, search_term, option_text, indice)
+        if ultimo or ultimo.motivo not in _MOTIVOS_RETRY_DROPDOWN:
+            return ultimo
+        if tentativa + 1 < max(1, tentativas):
+            espera_ms = 700 * (tentativa + 1)
+            print(f"[campo] {label_text!r}: {ultimo.motivo.value}; "
+                  f"repetindo em {espera_ms}ms", flush=True)
+            await page.wait_for_timeout(espera_ms)
+    return ultimo
 
 
 # JS: extrai os textos das opcoes do listbox aberto (dedup).

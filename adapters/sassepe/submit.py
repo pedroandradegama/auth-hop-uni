@@ -897,6 +897,15 @@ async def executar(job: dict) -> dict:
                               url=page.url,
                               screenshot_path=tela,
                           )
+                      if "selecao nao foi confirmada" in erro:
+                          raise FalhaDeterministica(
+                              motivo=MotivoFalha.CAMPO_NAO_PREENCHIDO,
+                              etapa="submit_sassepe",
+                              detalhe=(f"{erro}. Nada foi enviado ao portal — "
+                                       "seguro reenfileirar."),
+                              url=page.url,
+                              screenshot_path=tela,
+                          )
                       raise SubmitAbortado(f"Exame nao adicionado: {erro}")
 
               # Anexos — HARD STOP (I1): TODOS tem que confirmar.

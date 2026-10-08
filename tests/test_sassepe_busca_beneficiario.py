@@ -15,6 +15,30 @@ def test_valor_do_dropdown_precisa_confirmar_a_opcao_clicada():
     assert not ui._valor_confirma_opcao(None, "22")
 
 
+@pytest.mark.asyncio
+async def test_dropdown_repete_apenas_quando_o_estado_e_transitorio(monkeypatch):
+    ui = importlib.import_module("adapters.sassepe._ui")
+    respostas = iter((
+        ui.ResultadoCampo(ui.MotivoCampo.CLIQUE_SEM_EFEITO, "nao gravou"),
+        ui.ResultadoCampo(ui.MotivoCampo.OK),
+    ))
+
+    async def _uma_vez(*args, **kwargs):
+        return next(respostas)
+
+    monkeypatch.setattr(ui, "_preencher_dropdown_uma_vez", _uma_vez)
+
+    class _Page:
+        esperas = []
+        async def wait_for_timeout(self, ms): self.esperas.append(ms)
+
+    page = _Page()
+    resultado = await ui.preencher_dropdown_detalhado(
+        page, "Regime de Atendimento", "ambulatorial", "01 - Ambulatorial")
+    assert resultado.ok
+    assert page.esperas == [700]
+
+
 class _Mouse:
     async def click(self, *args):
         return None

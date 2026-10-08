@@ -324,7 +324,7 @@ class TestLazyLoadEsperado:
         assert page.wheels == 3
 
     def test_preencher_dropdown_expande_quando_o_alvo_nao_esta_na_lista(self):
-        src = inspect.getsource(_ui.preencher_dropdown_detalhado)
+        src = inspect.getsource(_ui._preencher_dropdown_uma_vez)
         assert "_opcao_presente" in src
         assert "expandir_listbox" in src
 
@@ -384,7 +384,8 @@ class TestRelatoDosCamposFixos:
             return _ui.MotivoCampo.SEM_RESPOSTA
         monkeypatch.setattr(_ui, "abrir_dropdown_tipado", _abrir)
         r = await _ui.preencher_dropdown_detalhado(
-            None, "Regime de Atendimento", "ambulatorial", "01 - Ambulatorial")
+            None, "Regime de Atendimento", "ambulatorial", "01 - Ambulatorial",
+            tentativas=1)
         assert not r
         assert r.motivo is _ui.MotivoCampo.SEM_RESPOSTA
         assert "nao respondeu" in r.detalhe and "ambulatorial" in r.detalhe
@@ -416,7 +417,8 @@ class TestRelatoDosCamposFixos:
         monkeypatch.setattr(_ui, "ler_listbox", _ler)
         monkeypatch.setattr(_ui, "clicar_opcao_listbox", _clicar)
         r = await _ui.preencher_dropdown_detalhado(
-            None, "Regime de Atendimento", "ambulatorial", "01 - Ambulatorial")
+            None, "Regime de Atendimento", "ambulatorial", "01 - Ambulatorial",
+            tentativas=1)
         assert not r
         assert r.motivo is _ui.MotivoCampo.CLIQUE_SEM_EFEITO
         assert "clique" in r.detalhe
@@ -517,7 +519,8 @@ class TestRelatoDosCamposFixos:
             return _ui.MotivoCampo.SEM_RESPOSTA
         monkeypatch.setattr(_ui, "abrir_dropdown_tipado", _abrir)
         r = await _ui.preencher_dropdown_detalhado(
-            None, "Regime de Atendimento", "ambulatorial", "01 - Ambulatorial")
+            None, "Regime de Atendimento", "ambulatorial", "01 - Ambulatorial",
+            tentativas=1)
         assert not r
         assert r.motivo is _ui.MotivoCampo.SEM_RESPOSTA
         assert "nao respondeu" in r.detalhe and "ambulatorial" in r.detalhe
@@ -549,7 +552,8 @@ class TestRelatoDosCamposFixos:
         monkeypatch.setattr(_ui, "ler_listbox", _ler)
         monkeypatch.setattr(_ui, "clicar_opcao_listbox", _clicar)
         r = await _ui.preencher_dropdown_detalhado(
-            None, "Regime de Atendimento", "ambulatorial", "01 - Ambulatorial")
+            None, "Regime de Atendimento", "ambulatorial", "01 - Ambulatorial",
+            tentativas=1)
         assert not r
         assert r.motivo is _ui.MotivoCampo.CLIQUE_SEM_EFEITO
         assert "clique" in r.detalhe
